@@ -1,0 +1,542 @@
+Here's the complete PRD, written strictly against what actually exists in the codebase we reviewed — nothing invented.
+
+```markdown
+# MEET — Portfolio PRD
+
+**Codename:** AGENT.MEET
+**Version:** 1.0.0
+**Owner:** meet
+**Status:** Pre-launch (placeholder content, see §7 and §8)
+**Last Updated:** Initial draft
+
+---
+
+## 1. Overview
+
+**MEET** is the personal developer portfolio for a full-stack Python/React engineer
+("meet"), built as a single-page Next.js application framed entirely as the UI of a
+tactical-shooter video game. Its primary visitors are recruiters, hiring managers,
+fellow engineers, and potential collaborators evaluating meet for paid work — and the
+site's job is to make that evaluation memorable while still surfacing real engineering
+substance.
+
+**Creative concept:** the entire portfolio is staged as a game's HUD. Visitors land on
+a "Main Menu" title screen, "queue" into the site via a matchmaking loading bar, and
+read each portfolio section as an in-match overlay (Agent Bio = the agent select screen,
+Agent Roster = playable agents = projects, Loadout = equipped gear = skills, Match
+Summary = post-match scoreboard = contact). Visuals are intentionally minimal: flat
+pixel-art accents and crisp 1px HUD borders over a near-black charcoal background, with
+a single Valorant-style red (#FF4655) accent. No 3D, no photographic textures, no heavy
+retro pastiche — pixel-art is used sparingly for charm; layout/typography stays clean
+and readable.
+
+---
+
+## 2. Goals & Success Criteria
+
+### Primary goals
+
+1. **Memorable first impression** — visitors should remember this site days later, ideally
+   share it.
+2. **Demonstrates real engineering work** — every project is browsable to a depth that
+   includes stack, role, abilities/features, and outcomes.
+3. **Conveys personality** — voice, killfeed, system log, and birds mini-game communicate
+   "this person enjoys their craft" without sacrificing professionalism.
+4. **Functions as a working contact funnel** — there is one obvious primary CTA
+   ("PLAY AGAIN" / email) and the social links are unambiguous and clickable.
+
+### Success criteria ("done")
+
+- [ ] 100% of placeholder content from §7 replaced with real content.
+- [ ] All six project detail pages are populated with real data (or unused slots removed).
+- [ ] Site renders and is navigable on mobile (touch device falls back gracefully on
+      cursor, ping, and birds).
+- [ ] Lighthouse Performance ≥ 85 desktop, ≥ 70 mobile; Accessibility ≥ 90.
+- [ ] `prefers-reduced-motion` is respected.
+- [ ] Settings → "REDUCED MOTION" toggle actually controls Framer Motion / Lenis behavior.
+- [ ] No console errors on first paint or during scroll.
+- [ ] Site is crawlable: meta tags, Open Graph image, per-route titles all present.
+- [ ] All known-issues marked High in §8 are closed.
+
+---
+
+## 3. Target Audience
+
+| Audience                          | What they look for                                                                                | Where they should land                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| **Recruiters / hiring managers**  | Quick verdict on skills + recent work + how to contact.                                           | Loadout + Match Summary (skip the menu fast) |
+| **Engineering managers / leads**  | Depth on architecture choices, role on each project, stack confidence.                            | Agent Roster → an individual `/agents/[slug]` |
+| **Fellow developers**             | Personality fit, taste, attention to detail in UI craftsmanship.                                  | The whole experience, especially the menu + transitions |
+| **Potential collaborators / clients** | Range of past work + ability to ship + how to reach meet.                                     | Agent Roster + Match Summary CTA      |
+| **Friends / curious visitors**    | Easter eggs, the birds mini-game, the killfeed.                                                   | Main Menu (birds, system log)         |
+
+Every audience must be able to reach **email contact in ≤ 2 clicks** from any screen.
+
+---
+
+## 4. Information Architecture
+
+### Site map
+
+```
+/                              ─ Main Menu (entry screen)
+  └─ stage: 'menu'             ─ default
+  └─ stage: 'settings'         ─ inline panel
+  └─ stage: 'matching'         ─ 1.6s loading screen
+  └─ → site shell              ─ after PLAY click
+        ├─ #about              ─ Agent Bio
+        ├─ #work               ─ Agent Roster
+        ├─ #skills             ─ Loadout
+        └─ #contact            ─ Match Summary
+/agents/[slug]                 ─ Per-project deep dive (6 routes today)
+/api/...                       ─ Health-check endpoint (non-public)
+```
+
+### Per-screen requirements
+
+#### 4.1 Main Menu (`/`, stage: `menu`)
+- **Purpose:** Set the tone and let the visitor "queue in".
+- **Must contain:**
+  - "MEET" pixel-font title.
+  - One-line tagline: stack + agent file number.
+  - Three menu items: **PLAY**, **SETTINGS**, **EXIT** (with hotkey labels 01/02/03).
+  - HUD top bar (version, region/ping/tick) and bottom bar (status, online indicator).
+  - Ambient layers: scrolling system log (bottom-left), background birds (top region),
+    `BIRDS NN` counter.
+
+#### 4.2 Main Menu — Settings (`/`, stage: `settings`)
+- **Purpose:** Surface two toggles without leaving the menu.
+- **Must contain:** REDUCED MOTION toggle, SOUND FX toggle, BACK button.
+
+#### 4.3 Main Menu — Matching (`/`, stage: `matching`)
+- **Purpose:** Brief, themed transition between menu and site.
+- **Must contain:** "FINDING MATCH..." text, animated loading bar (1.4s), queue label,
+  ETA label.
+- **Hard requirement:** total visible duration must be ≤ 2s before site content appears.
+
+#### 4.4 Agent Bio (`#about`)
+- **Purpose:** Who is meet, in tactical-agent voice.
+- **Must contain:**
+  - Codename, role tag, agent portrait (pixel-art helmet).
+  - Three stats (AGE / ORIGIN / RANK).
+  - Lore paragraph (~3–5 sentences).
+  - Four abilities (Q / E / C / X) with one-line descriptions each — these are meet's
+    soft skills reframed as abilities.
+
+#### 4.5 Agent Roster (`#work`)
+- **Purpose:** Project showcase as a roster grid.
+- **Must contain:** 3-up on desktop / 2-up on mobile grid of project cards. Each card:
+  pixel sprite, agent ID, name, role tag, one-line hook, "LOCK IN ▶" hover hint.
+  Clicking a card navigates to `/agents/[slug]`.
+
+#### 4.6 Loadout (`#skills`)
+- **Purpose:** Equipped tech stack at a glance.
+- **Must contain:** Three columns:
+  - **PRIMARY** (main combat kit — top 3–5 tools, each with a one-liner note).
+  - **SECONDARY** (supporting tools — flat list).
+  - **UTILITY** (passive traits = soft skills / workflow habits).
+- Each item carries a tier letter (S / A / B), color-coded.
+
+#### 4.7 Match Summary (`#contact`)
+- **Purpose:** End-of-experience CTA and contact funnel.
+- **Must contain:**
+  - "VICTORY" banner.
+  - "MATCH MVP" badge for meet with score-style stats (ACS / KDA).
+  - Six-stat scoreboard (projects shipped, years in game, etc.).
+  - Four "ADD FRIEND" social buttons (GitHub, LinkedIn, Twitter/X, Email).
+  - Primary "PLAY AGAIN ▶" button → mailto:.
+
+#### 4.8 Agent Detail (`/agents/[slug]`)
+- **Purpose:** Long-form per-project page.
+- **Statically generated** at build time via `generateStaticParams`.
+- **Must contain:**
+  - Sticky header with "◀ BACK TO ROSTER".
+  - Hero: pixel sprite, agent ID, YEAR / ROLE / STATUS stats, large glitched title,
+    role line, prose description, highlight chips, primary CTA (DEPLOY / INSPECT REPO
+    / "// CLASSIFIED ACCESS" placeholder).
+  - Abilities panel (Q/E/C/X) describing core features.
+  - Equipped Stack panel with animated proficiency bars (0–100%) per technology.
+  - "Patch Notes" line (year · status · maintained by AGENT.MEET).
+  - "SWITCH AGENT" footer grid with up to 3 other projects.
+
+---
+
+## 5. Functional Requirements
+
+> **FR-N.M** = Feature Number . Sub-requirement
+
+### FR-1 Custom Crosshair Cursor
+- **FR-1.1** Replace native cursor with a minimal red cross (4-arm, center gap).
+- **FR-1.2** States:
+  - Default: scale 1.0.
+  - Hovering an interactive element (`a / button / [role="button"] / input / textarea /
+    select / [data-interactive]`): scale 1.4.
+  - Mousedown: scale 0.7 and show a 1px-bordered 18×18 square around the crosshair.
+- **FR-1.3** Render with `mix-blend-difference` so it stays visible on light + dark
+  backgrounds.
+- **FR-1.4** **Touch fallback:** on `(hover: none), (pointer: coarse)` devices the
+  component returns `null` and native cursor is restored.
+
+### FR-2 Mini-Map Navigation
+- **FR-2.1** Fixed bottom-right widget, only visible after the user has entered the site
+  (post-PLAY).
+- **FR-2.2** Square HUD frame with 4 dots representing About / Work / Skills / Contact at
+  fixed percentage positions inside the box.
+- **FR-2.3** Active section dot is filled with accent color and pulses; inactive dots
+  use foreground color.
+- **FR-2.4** Active section is detected via `IntersectionObserver` (threshold 0.35) on
+  the section IDs.
+- **FR-2.5** Clicking a dot smooth-scrolls to that section via Lenis
+  (`duration: 1.2s, offset: -20`).
+- **FR-2.6** **Mobile:** must not occlude primary CTAs on viewports < 640 px wide
+  (see §8 issue I-9 — currently it does).
+
+### FR-3 Round Transition
+- **FR-3.1** Each of the four main sections is wrapped in a `RoundTransition` that
+  triggers once on first view (`IntersectionObserver` threshold 0.18).
+- **FR-3.2** On trigger: full-viewport overlay with a red horizontal bar wiping in
+  from the left and out to the right (1.0s total). Two thin white sweep lines
+  reinforce the wipe.
+- **FR-3.3** Bar contains: checkpoint code (left), pixel-font label (center),
+  "ROUND START" (right, desktop only).
+- **FR-3.4** Plays `Sound.round()` or `Sound.match()` depending on which section
+  triggered it.
+- **FR-3.5** Transition must respect Reduced Motion (see FR-9.1).
+
+### FR-4 Killfeed Toasts
+- **FR-4.1** Fixed top-right stack of pixel-font toasts shaped like a game killfeed:
+  `meet  [ELIM]  WEAPON  ▸  target`.
+- **FR-4.2** Trigger condition: a `scroll` listener fires `maybeFire()` whenever the
+  user has scrolled > 250 px since the last check.
+- **FR-4.3** Rate limit: minimum 6s cooldown between fires; 25% probability per eligible
+  event; pool entries are not reused until the entire pool has been consumed.
+- **FR-4.4** Each toast auto-dismisses 3.5s after appearing.
+- **FR-4.5** Content pool: at least 8 entries (currently 8), all dev-flavored
+  (e.g. "meet [ELIM] TRY/CATCH ▸ unhandled exceptions").
+
+### FR-5 Click-to-Ping
+- **FR-5.1** Clicking on the background (any non-interactive element) places an
+  expanding ring + center dot at the cursor that animates `scale 0.2 → 2.5, opacity
+  1 → 0` over 1s.
+- **FR-5.2** Ignored when the click target is inside `a / button / [role="button"] /
+  input / textarea / select / [data-interactive]`.
+- **FR-5.3** Plays `Sound.ping()` simultaneously.
+- **FR-5.4** **Touch fallback:** ping still fires on `click` events (touch events
+  synthesize clicks); cursor visual is irrelevant.
+
+### FR-6 Scrolling System Log (Main Menu only)
+- **FR-6.1** Fixed at bottom-left of the Main Menu, behind the menu content (`z-0`).
+- **FR-6.2** Visible area shows up to 6 lines with a top + bottom mask-image gradient
+  fade.
+- **FR-6.3** New lines spawn on a 1.3s interval, fade in at the bottom, push the stack
+  up, and the oldest line fades out at the top.
+- **FR-6.4** Content pool: ≥ 20 entries (currently 22), mix of `[OK]` and `[..]`
+  prefixes. `[..]` prefix is colored in accent, `[OK]` in foreground.
+- **FR-6.5** Pool consumer must not pick the most recent line twice in a row.
+- **FR-6.6** Component must `clearInterval` on unmount.
+
+### FR-7 Background Birds Mini-Game (Main Menu only)
+- **FR-7.1** Pixel-art birds (16×10 sprite, 2 flap frames + 1 dead frame) fly across the
+  upper ~32 % of the viewport with randomized direction, y-position, and speed
+  (60–140 px/sec).
+- **FR-7.2** Spawn rate: first bird at 1.2s after mount, then a random delay of
+  2.8–5.5s between spawns; max 3 birds alive simultaneously.
+- **FR-7.3** Each bird owns its own `requestAnimationFrame` loop that handles both
+  flying (`x += dir * speed * dt`, flap toggle every 220 ms) and death.
+- **FR-7.4** **Click-to-kill:**
+  - On click, the bird switches to a "dead" sprite (X-eyes) and the same RAF loop
+    runs: `dy = ½ · 1600 · t²` (gravity), `rot = ±720° · t/0.8`, `opacity = 1 - t/0.8`.
+  - After 0.85s the bird despawns.
+  - Bird buttons carry `data-no-click-sound` so the global click sound is suppressed;
+    `Sound.headshot()` plays instead.
+- **FR-7.5** Kill feedback toast ("HEADSHOT" or "TARGET ELIMINATED") appears at the
+  click point for 0.9s.
+- **FR-7.6** Persistent `BIRDS NN` counter sits above the Main Menu bottom HUD bar.
+- **FR-7.7** **Touch fallback:** birds still spawn and animate, but ergonomics on mobile
+  are out of scope; clicking should still work via tap-to-click synthesis.
+
+### FR-8 Sound System
+- **FR-8.1** Implemented in pure Web Audio API (oscillators + envelope + sweep), no
+  external audio files.
+- **FR-8.2** Single AudioContext, single master gain at 0.12 — initialized lazily on
+  first user gesture.
+- **FR-8.3** Available sounds: `hover`, `click`, `ping`, `match`, `headshot`, `defeat`,
+  `round`. (Defeat is currently unused but defined.)
+- **FR-8.4** A global `SoundProvider` mounts capture-phase listeners that fire `hover`
+  on first entry of any interactive element and `click` on any click — excluding
+  elements with `[data-no-click-sound]`.
+- **FR-8.5** Per-feature explicit calls:
+  - PLAY button → `Sound.match()`.
+  - Bird click → `Sound.headshot()`.
+  - Ping → `Sound.ping()`.
+  - Round transition → `Sound.round()` or `Sound.match()` depending on section.
+- **FR-8.6** Mute state persisted to `localStorage` under key `meet:sound` and survives
+  reload. Default ON for first-time visitors.
+
+### FR-9 Settings
+- **FR-9.1** **REDUCED MOTION toggle** must, when ON:
+  - Disable Framer Motion section reveals, round-transition wipe, and ambient animations
+    (glitch flicker, scanlines pulse).
+  - Lenis must fall back to native scroll.
+  - Killfeed toasts continue but with no entry/exit animation.
+  - **Currently visual-only — see §8 issue I-1.**
+- **FR-9.2** **SOUND FX toggle** must enable/disable all `Sound.*` calls and persist via
+  `localStorage:meet:sound`. (Implemented.)
+- **FR-9.3** Settings panel must be reachable from both the Main Menu and from the
+  site shell (currently only from the Main Menu).
+
+### FR-10 Project Detail Pages (`/agents/[slug]`)
+Each project entry must contain:
+- `slug` (URL segment) — kebab-case.
+- `id` — display ID like `AGT-01`.
+- `name` — short, all-caps, single word ideally.
+- `role` — Valorant agent role (CONTROLLER / SENTINEL / DUELIST / INITIATOR).
+- `hook` — one-line elevator pitch shown on the roster card.
+- `desc` — 2–4 sentence narrative for the detail page.
+- `palette` — accent hex color for that project's sprite.
+- `year`, `status` (LIVE / BETA / INTERNAL / RETIRED).
+- `repo` — GitHub URL or `null`.
+- `live` — live URL or `null`.
+- `stack` — array of `[name, proficiency 0–100]` tuples (3–4 items).
+- `abilities` — exactly 4 entries of `[key, name, desc]` (Q / E / C / X).
+- `highlights` — 3 short chips (e.g. `"12k DAU"`, `"99.95% uptime"`).
+
+All project data lives in `lib/projects.js` and is the single source of truth.
+
+### FR-11 Main Menu PLAY Flow
+- **FR-11.1** PLAY → stage transitions to `matching` → `Sound.match()` plays → after
+  1600ms `onPlay()` is called → parent unmounts MainMenu → site shell mounts with
+  `IntersectionObserver` and Lenis initialized.
+- **FR-11.2** Returning to the menu: header's "◀ MENU" button re-shows the
+  MainMenu (`showMenu = true`).
+- **FR-11.3** EXIT currently navigates to `https://www.google.com` — placeholder
+  behavior; see I-2.
+
+### FR-12 Site Shell
+- **FR-12.1** Fixed top header showing "◀ MENU", "MEET", "// AGENT FILE", and faux
+  HUD stats (HP / ARMOR / CREDS / ● LIVE).
+- **FR-12.2** Footer line with build/patch identifier.
+- **FR-12.3** Section dividers ("// CHECKPOINT 02", etc.) between each round.
+
+---
+
+## 6. Non-Functional Requirements
+
+### NFR-1 Performance
+- **NFR-1.1** Lighthouse Performance: ≥ 85 desktop, ≥ 70 mobile.
+- **NFR-1.2** All UI animations use only `transform` and `opacity` (no width/height
+  animations except the stat bars and the Main Menu loading bar, which are explicit
+  exceptions because they're tiny and brief).
+- **NFR-1.3** First Contentful Paint ≤ 1.5s on broadband desktop.
+- **NFR-1.4** Total initial JS payload ≤ 250 kB gzipped at /.
+- **NFR-1.5** Project detail pages must be statically generated (no SSR per request).
+- **NFR-1.6** Birds, ping rings, and killfeed toasts must despawn from the DOM after
+  their animation completes (memory hygiene).
+
+### NFR-2 Accessibility
+- **NFR-2.1** Respect `prefers-reduced-motion: reduce` in addition to the Settings
+  toggle.
+- **NFR-2.2** All informational text must meet WCAG AA contrast against `--bg`.
+  (Currently fg is `#ECE8E1` and muted is `#6b6b6b`; the muted color on `#121212`
+  must be verified.)
+- **NFR-2.3** All interactive elements must remain keyboard-focusable; focus styles
+  must be visible (a 1-px accent ring is acceptable).
+- **NFR-2.4** Custom cursor must not break any pointer-input behavior; native cursor
+  is restored on touch/coarse-pointer devices.
+- **NFR-2.5** Birds + ping + killfeed are decorative — they MUST NOT be required for
+  navigation or contact and MUST NOT be announced by screen readers
+  (`aria-hidden="true"` on all decorative containers).
+- **NFR-2.6** Semantic HTML for crawlability: each section uses `<section id="...">`,
+  one `<h1>` per page (the agent detail uses the project name; the home page uses
+  the MEET title), and `<nav>` / `<header>` / `<main>` / `<footer>` landmarks where
+  appropriate.
+
+### NFR-3 Browser / Device Support
+- **NFR-3.1** Desktop first. Targets: latest Chrome, Firefox, Safari, Edge.
+- **NFR-3.2** Mobile Safari + Chrome Android must render and be navigable. Cursor,
+  birds, and ping have explicit fallbacks. Lenis smooth scroll must not break iOS
+  rubber-banding.
+- **NFR-3.3** No requirement to support IE or pre-2022 browsers.
+
+### NFR-4 SEO
+- **NFR-4.1** Per-page `<title>` and `<meta name="description">`. Home title is
+  `MEET // AGENT PORTFOLIO`. Agent detail title is `${NAME} // AGENT FILE — MEET`.
+- **NFR-4.2** Open Graph image must exist (currently missing — see I-15) at 1200×630,
+  themed to the tactical HUD.
+- **NFR-4.3** robots.txt and sitemap.xml must be generated (currently missing).
+- **NFR-4.4** Canonical URLs declared on every route.
+
+---
+
+## 7. Content Requirements
+
+### 7.1 Placeholder content currently in the build — MUST be replaced before launch
+
+| Location              | Placeholder                                                                   |
+| --------------------- | ----------------------------------------------------------------------------- |
+| Agent Bio — codename  | "MEET" (likely OK)                                                            |
+| Agent Bio — role tag  | "DUELIST/INITIATOR"                                                           |
+| Agent Bio — stats     | AGE 24 / ORIGIN IN / RANK RADIANT                                             |
+| Agent Bio — lore      | Generic "eastern grid" paragraph                                              |
+| Agent Bio — abilities | 4 generic dev-flavored abilities (rapid prototyping, etc.)                    |
+| Agent Roster          | All 6 projects are fictional: NEXUS, ORACLE, GHOST, PYRE, BEACON, RUNE        |
+| Each project          | All `desc`, `highlights`, `stack`, `abilities`, `repo`, `live` URLs are fake  |
+| Loadout — PRIMARY     | Generic Python/React/TS/Postgres notes                                        |
+| Loadout — SECONDARY   | Generic tooling list                                                          |
+| Loadout — UTILITY     | Generic soft skills                                                           |
+| Match Summary stats   | Projects shipped 42, years 06, PRs 1.2K, deploys/wk 12 — invented             |
+| Match Summary MVP     | ACS 412 · KDA 4.8 — invented                                                  |
+| Match Summary friends | `@meet`, `meet@dev.gg`, github.com, linkedin.com, twitter.com — placeholders  |
+| Main Menu HUD         | "NA-EAST · PING 12MS · 128 TICK", "AGENT FILE #042" — flavor; OK to keep      |
+| Site shell HUD        | "HP 100", "ARMOR 50", "CREDS 9000" — flavor; OK to keep                       |
+| EXIT behavior         | Redirects to google.com (joke placeholder)                                    |
+
+### 7.2 Voice & tone guidelines
+
+- **Tactical-HUD-flavored, dry humor allowed.** "Eliminating bottlenecks before they
+  spawn" is on-brand; "I am passionate about delivering value to stakeholders" is not.
+- **No generic corporate language.** Avoid: "passionate", "synergy", "results-driven",
+  "leverages", "best-in-class".
+- **Concrete > abstract.** Use real numbers, real deploy counts, real outcomes wherever
+  possible. The killfeed only works because it names a specific thing being killed.
+- **Short sentences.** Pixel font + small caps make long sentences painful to read.
+- **All caps for HUD labels (font-pixel); sentence case for prose (font-mono).**
+- **Middle dot (·) is fine in mono, broken in pixel.** Press Start 2P doesn't ship
+  many unicode glyphs — keep `.font-pixel` text to ASCII only.
+
+### 7.3 Content checklist before launch
+
+- [ ] Real bio paragraph (3–5 sentences, agent-voice).
+- [ ] Real "abilities" (Q/E/C/X) — 4 traits with one-line descriptions.
+- [ ] Real role tag + stats (AGE / ORIGIN / RANK — "RANK" can stay flavor).
+- [ ] Real project list (or fewer than 6, if you don't have 6 — adjust the grid).
+- [ ] Real socials: GitHub URL, LinkedIn URL, Twitter/X URL, contact email.
+- [ ] Real Match Summary numbers (or scrub the ones that aren't meaningful).
+- [ ] Replace EXIT joke target with something on-brand.
+
+---
+
+## 8. Known Issues / Open Bugs
+
+| ID    | Severity | Description                                                                                                  | Suggested fix                                                                  |
+| ----- | -------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| I-1   | High     | "REDUCED MOTION" toggle in Settings is visual only — does not actually disable any animations.               | Wire to Framer Motion `MotionConfig reducedMotion="always"` + skip RoundTransition + disable Lenis when ON. Also auto-enable when `matchMedia('(prefers-reduced-motion: reduce)')`. |
+| I-2   | High     | EXIT button redirects to google.com.                                                                         | Replace with a themed "thanks for visiting" overlay or `window.close()` attempt. |
+| I-3   | High     | All 6 projects are placeholder; socials are placeholder; stats are invented.                                 | Content pass (see §7).                                                         |
+| I-4   | Medium   | Bird remains clickable during its death tumble — second click is a no-op but the cursor still reads as hover and may double-trigger toasts on rapid clicks. | Add `pointer-events: none` to the button style when `dead === true`.           |
+| I-5   | Medium   | No themed 404 / not-found page for `/agents/{invalid-slug}` — Next.js default page does not match HUD theme. | Add `app/agents/[slug]/not-found.js` + a global `app/not-found.js`.            |
+| I-6   | Medium   | Mini-map fixed bottom-right can overlap "PLAY AGAIN" CTA on viewports < 640 px.                              | Hide MiniMap with `hidden sm:block`, or relocate to bottom-left on mobile.     |
+| I-7   | Medium   | Killfeed only listens to native `scroll`. Lenis smooth-scroll consumes wheel events and may not emit native scroll on all browsers. | Subscribe to `lenis.on('scroll', ...)` instead of `window.addEventListener('scroll')`. |
+| I-8   | Medium   | Bird `hover` sound still plays via `SoundProvider` even though click sound is suppressed by `data-no-click-sound`. | Add the same skip-list to the `mouseover` handler in `SoundProvider`.          |
+| I-9   | Medium   | No Open Graph image — link previews will be plain text.                                                      | Generate a 1200×630 themed OG image (could be statically generated at `/og.png`). |
+| I-10  | Low      | No `robots.txt`, no `sitemap.xml`.                                                                           | Add `app/robots.js` + `app/sitemap.js`.                                        |
+| I-11  | Low      | `prefetch` on all 6 roster `<Link>` cards triggers 6 background fetches on home.                             | Set `prefetch={false}` on cards 4+ if scroll-deep.                             |
+| I-12  | Low      | Settings is only reachable from Main Menu, not from the site shell.                                          | Add a small ⚙ icon in the site shell header that opens the same panel.        |
+| I-13  | Low      | First user gesture latency for AudioContext can drop the very first hover/click sound.                       | Pre-warm AudioContext on first `pointerdown` or on Settings → Sound FX toggle. |
+| I-14  | Low      | `tailwind.config.js` carries unused shadcn HSL color tokens + `tailwindcss-animate` plugin.                  | Cleanup pass; remove if not adopted.                                           |
+| I-15  | Low      | `cursor: none !important` globally is hostile to users relying on system cursor magnification.               | Add a third Settings toggle: "NATIVE CURSOR".                                  |
+
+---
+
+## 9. Future Considerations (Not in scope now)
+
+These have been discussed and intentionally deferred. Do not start any of them
+without explicit re-prioritization.
+
+- **9.1 Additional mini-games:** A grenade-throw or planted-spike Easter egg layered
+  on top of an idle background.
+- **9.2 Expanded sound design:** Pre-baked sample-based hits (e.g. real Valorant-style
+  ability cues) in addition to or replacing the synth.
+- **9.3 Multiplayer-style visitor counter:** "AGENTS ONLINE: N" with a live websocket.
+- **9.4 Persistent visitor "mark":** Let visitors drop a permanent ping that other
+  visitors see (rate-limited, moderated).
+- **9.5 Commentary / code-comment toggle:** A "DEV CAM" mode that overlays meet's
+  inline thoughts on each section ("why I picked Lenis here", etc.).
+- **9.6 "View source" / raw-footage mode:** A toggle that strips the HUD and shows a
+  plain résumé / matter-of-fact layout for visitors who explicitly opt out.
+- **9.7 Keyboard navigation on the Main Menu:** ↑/↓ to focus, Enter to select,
+  Esc to back out (currently mouse only).
+- **9.8 Loadout deep-dive routes:** `/loadout/[skill]` per equipped tool.
+- **9.9 Working contact form** with server-side email send via Resend/SendGrid.
+- **9.10 Per-section round timers** that visibly tick down.
+
+---
+
+## 10. Tech Stack Reference
+
+> Treat this section as constraints. New features must work within this stack
+> unless explicitly re-scoped.
+
+| Concern                  | Choice                                              | Notes                                              |
+| ------------------------ | --------------------------------------------------- | -------------------------------------------------- |
+| Meta-framework           | **Next.js 15** (App Router)                         | Static export of `/agents/[slug]` via `generateStaticParams`. |
+| Language                 | **JavaScript** (`.js` / `.jsx`)                     | No TypeScript today.                               |
+| UI runtime               | **React 18**                                        |                                                    |
+| Styling                  | **Tailwind CSS 3** + small set of custom utilities in `app/globals.css` | Tokens via CSS variables, not Tailwind theme.      |
+| Theme tokens             | CSS variables: `--bg #121212`, `--fg #ECE8E1`, `--accent #FF4655`, `--muted #6b6b6b`, `--panel #1a1a1a`, `--border rgba(236,232,225,0.12)` | One accent color, used sparingly.                  |
+| Animation                | **Framer Motion** (`motion`, `AnimatePresence`, `layout`, `whileInView`) | Use `transform`/`opacity` only.                    |
+| Smooth scroll            | **Lenis**                                           | One instance, started after PLAY click.            |
+| Icons                    | **lucide-react**                                    | Only `Github`, `Linkedin`, `Twitter`, `Mail` today. |
+| Audio                    | **Web Audio API** (native, no library)              | All sounds synthesized at runtime in `lib/sound.js`. |
+| Fonts                    | **Press Start 2P** (pixel) + **JetBrains Mono** (HUD) via `next/font/google` | No webfont files in repo.                          |
+| Data layer               | Local module `lib/projects.js`                      | No CMS, no DB. Single source of truth.             |
+| Routing                  | `/` (home with menu + sections) + `/agents/[slug]` (6 static pages) + `/api/...` (health) |                                                    |
+| Hosting target           | Any platform supporting Next.js App Router (Vercel, Cloudflare Pages, self-host) |                                                    |
+| Package manager          | **yarn** (the project was built with `yarn add`; lockfile is `yarn.lock`) | Don't switch to npm without rebuilding the lockfile. |
+| Linting                  | ESLint (`next lint`)                                | Not enforced strictly.                             |
+| Build command            | `next build`                                        |                                                    |
+
+### Path alias
+
+`@/` resolves to the project root (`/`). All imports use it:
+```js
+import Sound from '@/lib/sound';
+import { PROJECTS } from '@/lib/projects';
+import MainMenu from '@/components/MainMenu';
+```
+
+### Component inventory (so future contributors can locate things)
+
+| Component              | Location                                  | Owns                                                                |
+| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| `MainMenu`             | `components/MainMenu.jsx`                 | Title screen, settings panel, matching screen.                      |
+| `MiniMap`              | `components/MiniMap.jsx`                  | Bottom-right tactical map.                                          |
+| `AgentBio`             | `components/AgentBio.jsx`                 | About section + helmet portrait SVG.                                |
+| `AgentRoster`          | `components/AgentRoster.jsx`              | Roster grid + exports `ProjectSprite`.                              |
+| `Loadout`              | `components/Loadout.jsx`                  | Skills with S/A/B tiers.                                            |
+| `MatchSummary`         | `components/MatchSummary.jsx`             | Victory banner + MVP + scoreboard + ADD FRIEND + CTA.               |
+| `CrosshairCursor`      | `components/CrosshairCursor.jsx`          | Custom cursor.                                                      |
+| `KillfeedToast`        | `components/KillfeedToast.jsx`            | Scroll-triggered toasts.                                            |
+| `PingEffect`           | `components/PingEffect.jsx`               | Click-to-ping.                                                      |
+| `SoundProvider`        | `components/SoundProvider.jsx`            | Global hover/click sound delegation.                                |
+| `RoundTransition`      | `components/RoundTransition.jsx`          | Section red-wipe overlay.                                           |
+| `SystemLog`            | `components/SystemLog.jsx`                | Bottom-left scrolling boot log.                                     |
+| `BackgroundBirds`      | `components/BackgroundBirds.jsx`          | Birds spawn + kill + counter.                                       |
+| `AgentDetailClient`    | `app/agents/[slug]/AgentDetailClient.js`  | Per-project page UI (client component).                             |
+
+### Library file inventory
+
+| File                        | Owns                                                                |
+| --------------------------- | ------------------------------------------------------------------- |
+| `lib/projects.js`           | All 6 project records + `getProjectBySlug(slug)`.                   |
+| `lib/sound.js`              | Web Audio singleton + `Sound.{hover,click,ping,match,headshot,defeat,round}` + persistence. |
+
+---
+
+## Sign-off
+
+This PRD is the source of truth. Any change that contradicts it must update the PRD
+in the same commit, not retroactively. If a future tool or contributor proposes a
+change that breaks one of the rules in §6 (Non-Functional) or §10 (Tech Stack), it
+needs an explicit, named exception in this document — not silent drift.
+```
+
+Save that as `PRD.md` at the repo root. A few notes on what I deliberately kept honest, in case Emergent's version differs:
+
+- **Reduced Motion** is documented as a hard requirement in NFR-2.1 and FR-9.1, but flagged as currently unwired in I-1. Don't let any future agent quietly mark it done without an actual code change.
+- **Birds are scoped to the Main Menu only** (FR-7) — that matches the code. If you ever move them site-wide, that's a scope change worth recording.
+- **Match Summary stats / agent role tag / agent file #042 / HP / ARMOR / CREDS** are documented as **flavor that's OK to keep**, distinct from placeholders that must be replaced. Treat that distinction as intentional.
+- **I-8 (bird hover sound)** is real and small — the global `SoundProvider` plays a `hover` beep when you mouse over a bird even though click sound is suppressed. Easy fix.
+- **The killfeed scroll listener vs Lenis (I-7)** is the issue most likely to silently break first if you ever change scroll behavior — keep an eye on it.
+
+If you want, my next move is to take §8 (bug list) and order it into an actual sprint backlog: which ones to ship before going public, which ones are post-launch polish. Want me to do that?

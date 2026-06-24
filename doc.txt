@@ -1,0 +1,2494 @@
+I have everything. Here is the complete technical breakdown.
+
+---
+
+# MEET — Tactical Portfolio · Full Technical Handoff
+
+A pixel-art / Valorant-HUD style personal portfolio. Single-page Next.js App Router site with dynamic per-project detail routes, smooth scroll via Lenis, animations via Framer Motion, sounds via Web Audio API.
+
+---
+
+## 1) STACK & DEPENDENCIES
+
+**Framework**: Next.js 15 (App Router) on React 18, plain JavaScript (`.js` / `.jsx`, no TypeScript)
+**Styling**: Tailwind CSS 3 + a small set of custom CSS utilities in `globals.css`
+**Animation**: Framer Motion
+**Smooth scroll**: Lenis
+**Icons**: lucide-react (only used in `MatchSummary` for socials)
+**Fonts**: Press Start 2P (pixel headings) + JetBrains Mono (HUD/body), both loaded via `next/font/google`
+**Audio**: Browser-native Web Audio API (no library) — implemented in `/lib/sound.js`
+
+`package.json` (only the runtime dependencies you'll actually need to recreate this — drop the others from the original template):
+
+```json
+{
+  "name": "meet-portfolio",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0 --port 3000",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "15.5.16",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "framer-motion": "11.18.0",
+    "lenis": "1.1.20",
+    "lucide-react": "0.516.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "tailwind-merge": "3.3.1"
+  },
+  "devDependencies": {
+    "autoprefixer": "10.4.19",
+    "postcss": "8.5.10",
+    "tailwindcss": "3.4.1",
+    "tailwindcss-animate": "1.0.7"
+  }
+}
+```
+
+> `tailwindcss-animate`, `clsx`, `tailwind-merge`, `class-variance-authority` are not strictly required for the components in this breakdown but are referenced by `tailwind.config.js` / common shadcn helpers — safe to keep or remove.
+
+Install command: `yarn install` (or `npm install`).
+
+---
+
+## 2) PROJECT STRUCTURE
+
+```
+/app
+├── app/
+│   ├── layout.js                     # Root layout, fonts injected
+│   ├── page.js                       # Home (MainMenu + scrollable site)
+│   ├── globals.css                   # Theme tokens + HUD utilities
+│   ├── api/
+│   │   └── [[...path]]/
+│   │       └── route.js              # Health-check API (optional)
+│   └── agents/
+│       └── [slug]/
+│           ├── page.js               # Server component (data load)
+│           └── AgentDetailClient.js  # Client component (UI)
+├── components/
+│   ├── MainMenu.jsx                  # Title screen + matchmaking
+│   ├── MiniMap.jsx                   # Bottom-right nav widget
+│   ├── AgentBio.jsx                  # "About" section
+│   ├── AgentRoster.jsx               # Projects grid (exports ProjectSprite)
+│   ├── Loadout.jsx                   # Skills (Primary/Secondary/Utility)
+│   ├── MatchSummary.jsx              # Contact section
+│   ├── CrosshairCursor.jsx           # Custom cursor
+│   ├── KillfeedToast.jsx             # Scroll-triggered killfeed
+│   ├── PingEffect.jsx                # Click-to-ping ring
+│   ├── SoundProvider.jsx             # Global hover/click sound delegate
+│   ├── RoundTransition.jsx           # Round-end style section wipe
+│   ├── SystemLog.jsx                 # Bottom-left scrolling boot log
+│   └── BackgroundBirds.jsx           # Pixel-art birds + click-to-kill
+├── lib/
+│   ├── projects.js                   # Single source of truth for project data
+│   └── sound.js                      # Web Audio synth + persistence
+├── tailwind.config.js
+├── postcss.config.js
+├── next.config.js                    # Next default
+└── package.json
+```
+
+Path alias `@/` points to `/app` (set in `jsconfig.json` or `tsconfig.json` — Next.js auto-detects).
+
+---
+
+## 3) FULL SOURCE CODE
+
+### `app/layout.js`
+
+```jsx
+import { Press_Start_2P, JetBrains_Mono } from 'next/font/google';
+import './globals.css';
+
+const pixel = Press_Start_2P({
+  weight: '400',
+  subsets: ['latin'],
+  variable: '--font-pixel',
+  display: 'swap',
+});
+
+const mono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+  display: 'swap',
+});
+
+export const metadata = {
+  title: 'MEET // AGENT PORTFOLIO',
+  description: 'Full-stack Python/React developer portfolio — tactical HUD style.',
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en" className={`${pixel.variable} ${mono.variable}`}>
+      <body className="antialiased">{children}</body>
+    </html>
+  );
+}
+```
+
+### `app/page.js`
+
+```jsx
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import Lenis from 'lenis';
+import { AnimatePresence } from 'framer-motion';
+
+import MainMenu from '@/components/MainMenu';
+import MiniMap from '@/components/MiniMap';
+import AgentBio from '@/components/AgentBio';
+import AgentRoster from '@/components/AgentRoster';
+import Loadout from '@/components/Loadout';
+import MatchSummary from '@/components/MatchSummary';
+import CrosshairCursor from '@/components/CrosshairCursor';
+import KillfeedToast from '@/components/KillfeedToast';
+import PingEffect from '@/components/PingEffect';
+import SoundProvider from '@/components/SoundProvider';
+import RoundTransition from '@/components/RoundTransition';
+
+function App() {
+  const [showMenu, setShowMenu] = useState(true);
+  const [activeSection, setActiveSection] = useState('about');
+  const lenisRef = useRef(null);
+
+  useEffect(() => {
+    if (showMenu) return;
+    const lenis = new Lenis({
+      lerp: 0.08,
+      smoothWheel: true,
+      wheelMultiplier: 1.0,
+    });
+    lenisRef.current = lenis;
+    function raf(time) {
+      lenis.raf(time);
+      requestAnimationFrame(raf);
+    }
+    const id = requestAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(id);
+      lenis.destroy();
+      lenisRef.current = null;
+    };
+  }, [showMenu]);
+
+  useEffect(() => {
+    if (showMenu) return;
+    const sections = ['about','work','skills','contact'];
+    const observers = [];
+    sections.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const obs = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) setActiveSection(id);
+          });
+        },
+        { threshold: 0.35 }
+      );
+      obs.observe(el);
+      observers.push(obs);
+    });
+    return () => observers.forEach(o => o.disconnect());
+  }, [showMenu]);
+
+  const handleNavigate = (sectionId) => {
+    const el = document.getElementById(sectionId);
+    if (!el) return;
+    if (lenisRef.current) {
+      lenisRef.current.scrollTo(el, { offset: -20, duration: 1.2 });
+    } else {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  return (
+    <>
+      <CrosshairCursor />
+      <PingEffect />
+      <SoundProvider />
+
+      <AnimatePresence mode="wait">
+        {showMenu && (
+          <MainMenu key="menu" onPlay={() => setShowMenu(false)} />
+        )}
+      </AnimatePresence>
+
+      {!showMenu && (
+        <>
+          <header className="fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 md:px-6 py-3 bg-[#0d0d0d]/80 backdrop-blur border-b border-[var(--border)]">
+            <div className="flex items-center gap-3">
+              <button
+                data-interactive
+                onClick={() => setShowMenu(true)}
+                className="font-pixel text-[10px] uppercase tracking-widest text-[var(--fg)] hover:text-[var(--accent)] transition"
+              >
+                ◀ MENU
+              </button>
+              <span className="text-[var(--muted)]">|</span>
+              <span className="font-pixel text-[10px] uppercase tracking-widest text-[var(--accent)]">MEET</span>
+              <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] hidden sm:inline">// AGENT FILE</span>
+            </div>
+            <div className="hidden md:flex items-center gap-4 font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+              <span>HP 100</span>
+              <span>ARMOR 50</span>
+              <span>CREDS 9000</span>
+              <span className="text-[var(--accent)]">● LIVE</span>
+            </div>
+          </header>
+
+          <main className="relative pt-16 scanlines">
+            <RoundTransition label="ROUND 01 · AGENT BIO" code="// CHECKPOINT 01" sound="round">
+              <AgentBio />
+            </RoundTransition>
+            <SectionDivider code="// CHECKPOINT 02" />
+            <RoundTransition label="ROUND 02 · AGENT ROSTER" code="// CHECKPOINT 02" sound="match">
+              <AgentRoster />
+            </RoundTransition>
+            <SectionDivider code="// CHECKPOINT 03" />
+            <RoundTransition label="ROUND 03 · LOADOUT" code="// CHECKPOINT 03" sound="round">
+              <Loadout />
+            </RoundTransition>
+            <SectionDivider code="// CHECKPOINT 04" />
+            <RoundTransition label="ROUND 04 · VICTORY" code="// MATCH END" sound="match">
+              <MatchSummary />
+            </RoundTransition>
+
+            <footer className="border-t border-[var(--border)] mt-12 px-6 py-8 text-center">
+              <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+                © MEET.GG &middot; BUILT WITH NEXT.JS &middot; PATCH NOTES 1.0.0 &middot; GG WP
+              </div>
+            </footer>
+          </main>
+
+          <MiniMap activeSection={activeSection} onNavigate={handleNavigate} />
+          <KillfeedToast />
+        </>
+      )}
+    </>
+  );
+}
+
+function SectionDivider({ code }) {
+  return (
+    <div className="max-w-7xl mx-auto px-6 md:px-12 py-6 flex items-center gap-3">
+      <span className="w-2 h-2 bg-[var(--accent)]" />
+      <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">{code}</span>
+      <span className="flex-1 h-px bg-[var(--border)]" />
+    </div>
+  );
+}
+
+export default App;
+```
+
+### `app/globals.css`
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #121212;
+  --fg: #ECE8E1;
+  --accent: #FF4655;
+  --muted: #6b6b6b;
+  --panel: #1a1a1a;
+  --border: rgba(236, 232, 225, 0.12);
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom crosshair cursor - hide native on non-touch */
+@media (hover: hover) and (pointer: fine) {
+  html, body, * {
+    cursor: none !important;
+  }
+  a, button, [role="button"], input, textarea, select {
+    cursor: none !important;
+  }
+}
+
+.font-pixel {
+  font-family: var(--font-pixel), monospace;
+  letter-spacing: 0.02em;
+}
+.font-mono {
+  font-family: var(--font-mono), monospace;
+}
+
+/* HUD utility classes */
+.hud-border { border: 1px solid var(--border); }
+.hud-border-accent { border: 1px solid var(--accent); }
+.accent { color: var(--accent); }
+.bg-accent-c { background-color: var(--accent); }
+
+/* HUD corner brackets */
+.corner-brackets { position: relative; }
+.corner-brackets::before,
+.corner-brackets::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: var(--accent);
+  border-style: solid;
+}
+.corner-brackets::before {
+  top: -1px; left: -1px;
+  border-width: 1px 0 0 1px;
+}
+.corner-brackets::after {
+  bottom: -1px; right: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+/* Scanline effect (very subtle) */
+.scanlines { position: relative; }
+.scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 2px,
+    rgba(255,255,255,0.015) 3px,
+    transparent 4px
+  );
+}
+
+/* Pulse for active mini-map dot */
+@keyframes pulse-accent {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,70,85,0.7); }
+  50% { box-shadow: 0 0 0 6px rgba(255,70,85,0); }
+}
+.pulse-dot { animation: pulse-accent 1.6s infinite; }
+
+/* Loading bar */
+@keyframes loading-bar {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.loading-bar { animation: loading-bar 1.4s ease-in-out forwards; }
+
+/* Glitch flicker */
+@keyframes glitch {
+  0%, 100% { opacity: 1; transform: translate(0,0); }
+  20% { opacity: 0.85; transform: translate(-1px,0); }
+  40% { opacity: 1; transform: translate(1px,0); }
+  60% { opacity: 0.92; transform: translate(0,1px); }
+}
+.glitch { animation: glitch 3s infinite; }
+
+/* Hide scrollbar */
+::-webkit-scrollbar { width: 0; height: 0; }
+* { scrollbar-width: none; }
+
+::selection {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Tactical grid background */
+.tactical-grid {
+  background-image:
+    linear-gradient(rgba(236,232,225,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(236,232,225,0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Stat bar */
+.stat-bar-bg { background: rgba(236,232,225,0.08); }
+.stat-bar-fill { background: var(--accent); }
+
+/* Diagonal stripe corner */
+.diag-stripe {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--accent),
+    var(--accent) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+```
+
+### `app/api/[[...path]]/route.js`
+
+```js
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  return NextResponse.json({ ok: true, service: 'meet-portfolio', version: '1.0.0' });
+}
+```
+
+### `app/agents/[slug]/page.js`
+
+```jsx
+import { notFound } from 'next/navigation';
+import { PROJECTS, getProjectBySlug } from '@/lib/projects';
+import AgentDetailClient from './AgentDetailClient';
+
+export function generateStaticParams() {
+  return PROJECTS.map((p) => ({ slug: p.slug }));
+}
+
+export async function generateMetadata({ params }) {
+  const { slug } = await params;
+  const p = getProjectBySlug(slug);
+  if (!p) return { title: 'AGENT NOT FOUND' };
+  return {
+    title: `${p.name} // AGENT FILE — MEET`,
+    description: p.hook,
+  };
+}
+
+export default async function AgentPage({ params }) {
+  const { slug } = await params;
+  const project = getProjectBySlug(slug);
+  if (!project) return notFound();
+  return <AgentDetailClient project={project} />;
+}
+```
+
+### `app/agents/[slug]/AgentDetailClient.js`
+
+```jsx
+'use client';
+import Link from 'next/link';
+import { motion } from 'framer-motion';
+import { useEffect } from 'react';
+import CrosshairCursor from '@/components/CrosshairCursor';
+import PingEffect from '@/components/PingEffect';
+import SoundProvider from '@/components/SoundProvider';
+import { ProjectSprite } from '@/components/AgentRoster';
+import { PROJECTS } from '@/lib/projects';
+import Sound from '@/lib/sound';
+
+export default function AgentDetailClient({ project }) {
+  useEffect(() => {
+    const t = setTimeout(() => { try { Sound.round(); } catch (_) {} }, 280);
+    return () => clearTimeout(t);
+  }, []);
+
+  const otherProjects = PROJECTS.filter((p) => p.slug !== project.slug).slice(0, 3);
+
+  return (
+    <>
+      <CrosshairCursor />
+      <PingEffect />
+      <SoundProvider />
+
+      <header className="fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 md:px-6 py-3 bg-[#0d0d0d]/85 backdrop-blur border-b border-[var(--border)]">
+        <div className="flex items-center gap-3">
+          <Link href="/" data-interactive className="font-pixel text-[10px] uppercase tracking-widest text-[var(--fg)] hover:text-[var(--accent)] transition">
+            ◀ BACK TO ROSTER
+          </Link>
+          <span className="text-[var(--muted)]">|</span>
+          <span className="font-pixel text-[10px] uppercase tracking-widest text-[var(--accent)]">MEET</span>
+        </div>
+        <div className="hidden md:flex items-center gap-4 font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+          <span>AGENT FILE · {project.id}</span>
+          <span className="text-[var(--accent)]">● {project.status}</span>
+        </div>
+      </header>
+
+      <main className="relative pt-20 pb-24 scanlines">
+        <div className="max-w-7xl mx-auto px-6 md:px-12">
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+            ROSTER &middot; <span className="text-[var(--accent)]">{project.name}</span>
+          </div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.45 }}
+            className="mt-4 grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6"
+          >
+            <div className="hud-border bg-[var(--panel)] p-6 corner-brackets">
+              <div className="aspect-square bg-[#0f0f0f] hud-border grid place-items-center">
+                <ProjectSprite color={project.palette} large />
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                <Stat label="YEAR" value={project.year} />
+                <Stat label="ROLE" value={project.role} accent />
+                <Stat label="STATUS" value={project.status} />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-3">
+                <span className="diag-stripe w-3 h-6" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">CLASSIFIED DOSSIER</span>
+              </div>
+              <h1 className="font-pixel text-5xl md:text-7xl mt-3 text-[var(--fg)] glitch">{project.name}</h1>
+              <div className="font-mono text-[11px] uppercase tracking-[0.3em] text-[var(--accent)] mt-2">
+                ROLE — {project.role}
+              </div>
+              <p className="mt-6 text-sm md:text-base text-[var(--fg)] leading-relaxed max-w-prose">
+                {project.desc}
+              </p>
+
+              <div className="mt-6 flex flex-wrap gap-2">
+                {project.highlights.map((h) => (
+                  <span key={h} className="hud-border-accent px-3 py-1 font-pixel text-[10px] uppercase tracking-widest text-[var(--accent)]">
+                    {h}
+                  </span>
+                ))}
+              </div>
+
+              <div className="mt-8 flex flex-wrap gap-3">
+                {project.live && (
+                  <a href={project.live} target="_blank" rel="noreferrer" data-interactive className="inline-flex items-center gap-2 px-5 py-3 bg-[var(--accent)] text-white font-pixel text-[11px] uppercase tracking-widest hover:bg-[var(--fg)] hover:text-[var(--bg)] transition">
+                    DEPLOY ▶
+                  </a>
+                )}
+                {project.repo && (
+                  <a href={project.repo} target="_blank" rel="noreferrer" data-interactive className="inline-flex items-center gap-2 px-5 py-3 hud-border-accent text-[var(--accent)] font-pixel text-[11px] uppercase tracking-widest hover:bg-[var(--accent)] hover:text-white transition">
+                    INSPECT REPO
+                  </a>
+                )}
+                {!project.live && !project.repo && (
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] px-3 py-3">// CLASSIFIED ACCESS</span>
+                )}
+              </div>
+            </div>
+          </motion.div>
+
+          <div className="mt-12 grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <motion.div
+              initial={{ opacity: 0, x: -20 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.4 }}
+              className="hud-border bg-[var(--panel)] p-6"
+            >
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)] mb-4">ABILITIES</div>
+              <div className="space-y-2">
+                {project.abilities.map(([key, name, desc]) => (
+                  <div key={key} data-interactive className="hud-border p-3 flex items-start gap-4 hover:border-[var(--accent)] transition">
+                    <div className="flex-shrink-0 w-10 h-10 hud-border-accent grid place-items-center font-pixel text-sm text-[var(--accent)]">
+                      {key}
+                    </div>
+                    <div>
+                      <div className="font-pixel text-xs uppercase text-[var(--fg)]">{name}</div>
+                      <div className="font-mono text-xs text-[var(--muted)] mt-1">{desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.4 }}
+              className="hud-border bg-[var(--panel)] p-6"
+            >
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)] mb-4">EQUIPPED STACK</div>
+              <div className="space-y-3">
+                {project.stack.map(([name, pct]) => (
+                  <div key={name}>
+                    <div className="flex justify-between font-mono text-[10px] uppercase tracking-widest mb-1">
+                      <span className="text-[var(--fg)]">{name}</span>
+                      <span className="text-[var(--accent)]">{pct}%</span>
+                    </div>
+                    <div className="stat-bar-bg h-1.5 w-full">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        whileInView={{ width: `${pct}%` }}
+                        viewport={{ once: true }}
+                        transition={{ duration: 0.8, ease: 'easeOut' }}
+                        className="stat-bar-fill h-full"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-6 hud-border p-3">
+                <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] mb-1">PATCH NOTES</div>
+                <div className="font-mono text-xs text-[var(--fg)] leading-relaxed">
+                  // {project.year} · {project.status} · maintained by AGENT.MEET
+                </div>
+              </div>
+            </motion.div>
+          </div>
+
+          <div className="mt-16">
+            <div className="flex items-center justify-between mb-4 border-b border-[var(--border)] pb-3">
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">SWITCH AGENT</div>
+              <Link href="/#work" data-interactive className="font-pixel text-[10px] uppercase tracking-widest text-[var(--accent)] hover:text-[var(--fg)] transition">
+                FULL ROSTER ▶
+              </Link>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {otherProjects.map((p) => (
+                <Link
+                  key={p.slug}
+                  href={`/agents/${p.slug}`}
+                  data-interactive
+                  className="group hud-border bg-[var(--panel)] p-4 flex items-center gap-4 hover:border-[var(--accent)] transition"
+                >
+                  <div className="w-14 h-14 bg-[#0f0f0f] hud-border grid place-items-center flex-shrink-0">
+                    <ProjectSprite color={p.palette} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-pixel text-xs text-[var(--fg)] group-hover:text-[var(--accent)] transition">{p.name}</div>
+                    <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">{p.role}</div>
+                  </div>
+                  <span className="ml-auto font-pixel text-xs text-[var(--accent)] opacity-0 group-hover:opacity-100 transition">▶</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
+      </main>
+    </>
+  );
+}
+
+function Stat({ label, value, accent }) {
+  return (
+    <div className="hud-border py-2 px-1">
+      <div className="font-mono text-[9px] uppercase tracking-widest text-[var(--muted)]">{label}</div>
+      <div className={`font-pixel text-[10px] mt-1 ${accent ? 'text-[var(--accent)]' : 'text-[var(--fg)]'}`}>{value}</div>
+    </div>
+  );
+}
+```
+
+### `components/MainMenu.jsx`
+
+```jsx
+'use client';
+import { useEffect, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import Sound from '@/lib/sound';
+import SystemLog from '@/components/SystemLog';
+import BackgroundBirds from '@/components/BackgroundBirds';
+
+export default function MainMenu({ onPlay }) {
+  const [stage, setStage] = useState('menu'); // menu | settings | matching
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [soundOn, setSoundOn] = useState(true);
+
+  useEffect(() => {
+    Sound.init();
+    setSoundOn(Sound.isEnabled());
+  }, []);
+
+  const handlePlay = () => {
+    setStage('matching');
+    try { Sound.match(); } catch (_) {}
+    setTimeout(() => onPlay(), 1600);
+  };
+
+  const handleExit = () => {
+    if (typeof window !== 'undefined') {
+      window.location.href = 'https://www.google.com';
+    }
+  };
+
+  const toggleSound = () => {
+    const next = !soundOn;
+    Sound.setEnabled(next);
+    setSoundOn(next);
+    if (next) { try { Sound.click(); } catch (_) {} }
+  };
+
+  return (
+    <motion.div
+      className="fixed inset-0 z-[1000] bg-[#0d0d0d] tactical-grid scanlines flex flex-col overflow-hidden"
+      initial={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.4 }}
+    >
+      {/* Ambient background layers (behind menu) */}
+      <BackgroundBirds />
+      <SystemLog />
+
+      {/* TOP BAR */}
+      <div className="relative z-10 flex items-center justify-between px-6 py-4 hud-border border-l-0 border-r-0 border-t-0 pointer-events-none">
+        <div className="flex items-center gap-3 pointer-events-auto">
+          <div className="w-2 h-2 bg-accent-c pulse-dot" />
+          <span className="font-pixel text-[10px] uppercase tracking-[0.25em] text-[var(--fg)]">MEET // v1.0.0</span>
+        </div>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] pointer-events-auto">
+          NA-EAST &middot; PING 12MS &middot; 128 TICK
+        </div>
+      </div>
+
+      {/* MIDDLE — vertically + horizontally centered, pointer-events pass through empty area */}
+      <div className="relative z-10 flex-1 grid place-items-center px-6 pointer-events-none">
+        <AnimatePresence mode="wait">
+          {stage === 'menu' && (
+            <motion.div
+              key="menu"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.4 }}
+              className="w-full max-w-2xl pointer-events-auto"
+            >
+              <div className="mb-6 flex items-center gap-3">
+                <span className="diag-stripe w-3 h-6" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">MAIN MENU</span>
+              </div>
+
+              <h1 className="font-pixel text-[64px] sm:text-[96px] leading-none text-[var(--fg)] glitch">
+                MEET
+              </h1>
+              <div className="mt-3 font-mono text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                FULL-STACK &middot; PYTHON / REACT &middot; AGENT FILE #042
+              </div>
+
+              <div className="mt-10 space-y-1 max-w-md">
+                <MenuItem label="PLAY" hotkey="01" onClick={handlePlay} primary />
+                <MenuItem label="SETTINGS" hotkey="02" onClick={() => setStage('settings')} />
+                <MenuItem label="EXIT" hotkey="03" onClick={handleExit} />
+              </div>
+
+              <div className="mt-8 font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+                [ ENTER ] CONFIRM &nbsp;&middot;&nbsp; [ ESC ] BACK
+              </div>
+            </motion.div>
+          )}
+
+          {stage === 'settings' && (
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.3 }}
+              className="w-full max-w-2xl pointer-events-auto"
+            >
+              <div className="mb-6 flex items-center gap-3">
+                <span className="diag-stripe w-3 h-6" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">SETTINGS</span>
+              </div>
+              <h2 className="font-pixel text-2xl text-[var(--fg)] mb-8">CONFIGURATION</h2>
+
+              <div className="space-y-2">
+                <ToggleRow label="REDUCED MOTION" value={reducedMotion} onChange={() => setReducedMotion(v => !v)} />
+                <ToggleRow label="SOUND FX" value={soundOn} onChange={toggleSound} />
+              </div>
+
+              <button
+                onClick={() => setStage('menu')}
+                data-interactive
+                className="mt-10 font-pixel text-xs uppercase tracking-widest text-[var(--accent)] hover:text-[var(--fg)] transition"
+              >
+                &lt; BACK
+              </button>
+            </motion.div>
+          )}
+
+          {stage === 'matching' && (
+            <motion.div
+              key="matching"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="w-full max-w-xl text-center pointer-events-auto"
+            >
+              <div className="font-mono text-[10px] uppercase tracking-[0.4em] text-[var(--muted)] mb-4">
+                INITIALIZING MATCH
+              </div>
+              <h2 className="font-pixel text-2xl text-[var(--fg)] mb-8">
+                FINDING MATCH<span className="inline-block w-6 text-left"><Dots /></span>
+              </h2>
+              <div className="hud-border h-2 w-full bg-[var(--panel)] relative overflow-hidden">
+                <div className="loading-bar h-full bg-[var(--accent)]" />
+              </div>
+              <div className="mt-4 flex justify-between font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+                <span>QUEUE: COMPETITIVE</span>
+                <span>ETA 00:02</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* BOTTOM BAR */}
+      <div className="relative z-10 flex items-center justify-between px-6 py-4 hud-border border-l-0 border-r-0 border-b-0 pointer-events-none">
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] pointer-events-auto">
+          AGENT.MEET ▸ READY
+        </div>
+        <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] pointer-events-auto">
+          <span className="w-1.5 h-1.5 bg-accent-c" /> ONLINE
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function MenuItem({ label, hotkey, onClick, primary }) {
+  return (
+    <button
+      onClick={onClick}
+      data-interactive
+      className={`group relative w-full flex items-center justify-between px-4 py-3 hud-border bg-transparent hover:bg-[var(--accent)] hover:border-[var(--accent)] transition-colors`}
+    >
+      <div className="flex items-center gap-4">
+        <span className="font-mono text-[10px] text-[var(--muted)] group-hover:text-white">{hotkey}</span>
+        <span className="font-pixel text-sm uppercase text-[var(--fg)] group-hover:text-white">{label}</span>
+      </div>
+      <span className="font-pixel text-sm text-[var(--accent)] group-hover:text-white opacity-0 group-hover:opacity-100 transition-opacity">▶</span>
+      {primary && (
+        <span className="absolute -left-2 top-1/2 -translate-y-1/2 w-1 h-6 bg-accent-c" />
+      )}
+    </button>
+  );
+}
+
+function ToggleRow({ label, value, onChange }) {
+  return (
+    <button onClick={onChange} data-interactive className="w-full flex items-center justify-between px-4 py-3 hud-border hover:border-[var(--accent)] transition">
+      <span className="font-pixel text-xs uppercase text-[var(--fg)]">{label}</span>
+      <span className={`font-mono text-xs uppercase tracking-widest ${value ? 'text-[var(--accent)]' : 'text-[var(--muted)]'}`}>
+        {value ? '[ ON ]' : '[ OFF ]'}
+      </span>
+    </button>
+  );
+}
+
+function Dots() {
+  return (
+    <span className="inline-block">
+      <span className="animate-pulse">.</span>
+      <span className="animate-pulse" style={{ animationDelay: '0.2s' }}>.</span>
+      <span className="animate-pulse" style={{ animationDelay: '0.4s' }}>.</span>
+    </span>
+  );
+}
+```
+
+### `components/MiniMap.jsx`
+
+```jsx
+'use client';
+import { useEffect, useState } from 'react';
+
+const SECTIONS = [
+  { id: 'about',   label: 'A', x: 22, y: 28 },
+  { id: 'work',    label: 'B', x: 70, y: 32 },
+  { id: 'skills',  label: 'C', x: 30, y: 70 },
+  { id: 'contact', label: 'D', x: 75, y: 75 },
+];
+
+export default function MiniMap({ activeSection, onNavigate }) {
+  return (
+    <div className="fixed bottom-6 right-6 z-50 select-none" data-interactive>
+      <div className="mb-2 flex items-center justify-between font-mono text-[9px] uppercase tracking-widest text-[var(--muted)]">
+        <span>MAP · HAVEN</span>
+        <span className="text-[var(--accent)]">●</span>
+      </div>
+      <div className="relative w-44 h-44 hud-border bg-[#0f0f0f] tactical-grid corner-brackets">
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="w-px h-full bg-[var(--border)]" />
+        </div>
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="h-px w-full bg-[var(--border)]" />
+        </div>
+
+        {SECTIONS.map((s) => {
+          const active = activeSection === s.id;
+          return (
+            <button
+              key={s.id}
+              onClick={() => onNavigate(s.id)}
+              data-interactive
+              className="absolute -translate-x-1/2 -translate-y-1/2 group"
+              style={{ left: `${s.x}%`, top: `${s.y}%` }}
+              aria-label={`Go to ${s.id}`}
+            >
+              <span
+                className={`block w-2.5 h-2.5 ${active ? 'bg-[var(--accent)] pulse-dot' : 'bg-[var(--fg)]'} group-hover:bg-[var(--accent)] transition`}
+              />
+              <span className={`absolute left-4 top-1/2 -translate-y-1/2 font-mono text-[8px] uppercase tracking-widest whitespace-nowrap ${active ? 'text-[var(--accent)]' : 'text-[var(--muted)]'} group-hover:text-[var(--fg)]`}>
+                {s.id}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex justify-between font-mono text-[9px] uppercase tracking-widest text-[var(--muted)]">
+        <span>ROUND 01</span>
+        <span>04:20</span>
+      </div>
+    </div>
+  );
+}
+```
+
+### `components/AgentBio.jsx`
+
+```jsx
+'use client';
+import { motion } from 'framer-motion';
+
+const ABILITIES = [
+  { key: 'Q', name: 'RAPID PROTOTYPING', desc: 'Spin up an MVP in hours, not weeks. Ship fast, refine in production.' },
+  { key: 'E', name: 'SYSTEM DESIGN', desc: 'Architect scalable backends and clean APIs that don\u2019t collapse under load.' },
+  { key: 'C', name: 'DEBUG UNDER PRESSURE', desc: 'Stack trace in one tab, calm in the other. Finds the root cause every time.' },
+  { key: 'X', name: 'FULL SEND TO PROD', desc: 'Ultimate. CI/CD, rollouts, monitoring \u2014 deploy with zero drama.' },
+];
+
+export default function AgentBio() {
+  return (
+    <section id="about" className="relative min-h-screen px-6 md:px-12 py-24 max-w-7xl mx-auto">
+      <SectionHeader code="01 / 04" title="AGENT BIO" sub={"DOSSIER · CLASSIFIED"} />
+
+      <div className="mt-12 grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-10">
+        <motion.div
+          initial={{ opacity: 0, x: -20 }}
+          whileInView={{ opacity: 1, x: 0 }}
+          viewport={{ once: true, margin: '-100px' }}
+          transition={{ duration: 0.5 }}
+          className="hud-border corner-brackets bg-[var(--panel)] p-6 relative"
+        >
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">CODENAME</div>
+              <div className="font-pixel text-3xl mt-1">MEET</div>
+            </div>
+            <div className="text-right">
+              <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">ROLE</div>
+              <div className="font-pixel text-xs text-[var(--accent)] mt-1">DUELIST/INITIATOR</div>
+            </div>
+          </div>
+
+          <div className="aspect-square w-full max-w-xs mx-auto bg-[#0f0f0f] hud-border grid place-items-center mb-6">
+            <PixelPortrait />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <Stat label="AGE" value="24" />
+            <Stat label="ORIGIN" value="IN" />
+            <Stat label="RANK" value="RADIANT" />
+          </div>
+        </motion.div>
+
+        <div>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5 }}
+          >
+            <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--accent)] mb-3">// LORE</div>
+            <p className="text-[var(--fg)] leading-relaxed text-sm md:text-base max-w-prose">
+              Operating out of a low-lit setup somewhere on the eastern grid, <span className="text-[var(--accent)]">MEET</span> is a full-stack agent specialized in Python and React engagements. Equipped with a decade of self-trained reflexes and a habit of shipping before sunrise, MEET turns vague specs into deployable assets, eliminating bottlenecks before they spawn. Known to engage scope creep on sight.
+            </p>
+          </motion.div>
+
+          <div className="mt-10">
+            <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--muted)] mb-4">ABILITIES</div>
+            <div className="space-y-2">
+              {ABILITIES.map((a, i) => (
+                <motion.div
+                  key={a.key}
+                  initial={{ opacity: 0, x: 20 }}
+                  whileInView={{ opacity: 1, x: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.35, delay: i * 0.08 }}
+                  className="hud-border p-3 flex items-start gap-4 hover:border-[var(--accent)] transition-colors"
+                  data-interactive
+                >
+                  <div className="flex-shrink-0 w-10 h-10 hud-border-accent grid place-items-center font-pixel text-sm text-[var(--accent)]">
+                    {a.key}
+                  </div>
+                  <div>
+                    <div className="font-pixel text-xs uppercase text-[var(--fg)]">{a.name}</div>
+                    <div className="font-mono text-xs text-[var(--muted)] mt-1">{a.desc}</div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="hud-border py-2">
+      <div className="font-mono text-[9px] uppercase tracking-widest text-[var(--muted)]">{label}</div>
+      <div className="font-pixel text-xs mt-1 text-[var(--fg)]">{value}</div>
+    </div>
+  );
+}
+
+function PixelPortrait() {
+  return (
+    <svg viewBox="0 0 16 16" className="w-3/4 h-3/4" style={{ imageRendering: 'pixelated' }} shapeRendering="crispEdges">
+      {[
+        [4,2],[5,2],[6,2],[7,2],[8,2],[9,2],[10,2],[11,2],
+        [3,3],[12,3],
+        [3,4],[12,4],
+        [2,5],[13,5],
+        [2,6],[13,6],
+        [2,7],[13,7],
+        [2,8],[13,8],
+        [3,9],[12,9],
+        [3,10],[12,10],
+        [4,11],[5,11],[6,11],[7,11],[8,11],[9,11],[10,11],[11,11],
+      ].map(([x,y],i) => (
+        <rect key={`o${i}`} x={x} y={y} width="1" height="1" fill="#ECE8E1" />
+      ))}
+      {[
+        [4,5],[5,5],[6,5],[7,5],[8,5],[9,5],[10,5],[11,5],
+        [4,6],[5,6],[6,6],[7,6],[8,6],[9,6],[10,6],[11,6],
+      ].map(([x,y],i) => (
+        <rect key={`v${i}`} x={x} y={y} width="1" height="1" fill="#FF4655" />
+      ))}
+      {[
+        [5,8],[7,8],[9,8],[11,8],
+      ].map(([x,y],i) => (
+        <rect key={`m${i}`} x={x} y={y} width="1" height="1" fill="#6b6b6b" />
+      ))}
+    </svg>
+  );
+}
+
+function SectionHeader({ code, title, sub }) {
+  return (
+    <div className="flex items-end justify-between gap-4 border-b border-[var(--border)] pb-4">
+      <div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--accent)] mb-2">{code}</div>
+        <h2 className="font-pixel text-3xl md:text-5xl text-[var(--fg)]">{title}</h2>
+      </div>
+      <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] hidden md:block">{sub}</div>
+    </div>
+  );
+}
+```
+
+### `components/AgentRoster.jsx`
+
+```jsx
+'use client';
+import Link from 'next/link';
+import { motion } from 'framer-motion';
+import { PROJECTS } from '@/lib/projects';
+
+export default function AgentRoster() {
+  return (
+    <section id="work" className="relative min-h-screen px-6 md:px-12 py-24 max-w-7xl mx-auto">
+      <div className="flex items-end justify-between gap-4 border-b border-[var(--border)] pb-4">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--accent)] mb-2">02 / 04</div>
+          <h2 className="font-pixel text-3xl md:text-5xl text-[var(--fg)]">AGENT ROSTER</h2>
+        </div>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] hidden md:block">
+          SELECT AGENT &middot; LOCK IN
+        </div>
+      </div>
+
+      <div className="mt-10 grid grid-cols-2 md:grid-cols-3 gap-3">
+        {PROJECTS.map((p, i) => (
+          <motion.div
+            key={p.slug}
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: '-50px' }}
+            transition={{ duration: 0.35, delay: i * 0.05 }}
+          >
+            <Link
+              href={`/agents/${p.slug}`}
+              data-interactive
+              prefetch
+              className="block group text-left hud-border bg-[var(--panel)] p-4 hover:border-[var(--accent)] hover:shadow-[0_0_0_1px_rgba(255,70,85,0.4)] transition relative"
+            >
+              <motion.div whileHover={{ scale: 1.01 }} className="contents">
+                <div className="aspect-square bg-[#0f0f0f] hud-border grid place-items-center mb-3 relative overflow-hidden">
+                  <ProjectSprite color={p.palette} />
+                  <div className="absolute top-1 left-1 font-mono text-[8px] uppercase tracking-widest text-[var(--muted)]">
+                    {p.id}
+                  </div>
+                  <div className="absolute bottom-1 right-1 font-mono text-[8px] uppercase tracking-widest text-[var(--accent)] opacity-0 group-hover:opacity-100 transition">
+                    LOCK IN ▶
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-pixel text-sm text-[var(--fg)]">{p.name}</div>
+                  <div className="font-mono text-[9px] uppercase tracking-widest text-[var(--accent)]">{p.role}</div>
+                </div>
+                <div className="font-mono text-[11px] text-[var(--muted)] leading-relaxed h-10">{p.hook}</div>
+              </motion.div>
+            </Link>
+          </motion.div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function ProjectSprite({ color, large }) {
+  const pixels = [
+    [3,2],[4,2],[5,2],[6,2],
+    [2,3],[7,3],
+    [2,4],[7,4],
+    [1,5],[8,5],
+    [1,6],[3,6],[6,6],[8,6],
+    [1,7],[8,7],
+    [2,8],[7,8],
+    [3,9],[6,9],
+    [4,10],[5,10],
+  ];
+  return (
+    <svg viewBox="0 0 10 12" className={`${large ? 'w-3/4 h-3/4' : 'w-1/2 h-1/2'}`} style={{ imageRendering: 'pixelated' }} shapeRendering="crispEdges">
+      {pixels.map(([x,y],i) => (
+        <rect key={i} x={x} y={y} width="1" height="1" fill={color} />
+      ))}
+    </svg>
+  );
+}
+```
+
+### `components/Loadout.jsx`
+
+```jsx
+'use client';
+import { motion } from 'framer-motion';
+
+const LOADOUT = {
+  PRIMARY: {
+    desc: 'MAIN COMBAT KIT',
+    items: [
+      { name: 'PYTHON', tier: 'S', note: 'FastAPI, Django, asyncio. 8+ years.' },
+      { name: 'REACT / NEXT.JS', tier: 'S', note: 'App Router, RSC, suspense, streaming.' },
+      { name: 'TYPESCRIPT', tier: 'A', note: 'Strict mode. Generics. No anys.' },
+      { name: 'POSTGRES', tier: 'A', note: 'Schemas, indexes, triggers, CTEs.' },
+    ],
+  },
+  SECONDARY: {
+    desc: 'SUPPORTING TOOLS',
+    items: [
+      { name: 'DOCKER / K8S', tier: 'B' },
+      { name: 'AWS / GCP', tier: 'B' },
+      { name: 'REDIS', tier: 'A' },
+      { name: 'TAILWIND', tier: 'S' },
+      { name: 'FRAMER MOTION', tier: 'A' },
+      { name: 'POSTGRES + PRISMA', tier: 'A' },
+      { name: 'LLM APIS', tier: 'A' },
+    ],
+  },
+  UTILITY: {
+    desc: 'PASSIVE TRAITS',
+    items: [
+      { name: 'ASYNC COMMS', tier: 'S' },
+      { name: 'WRITES READABLE PRs', tier: 'S' },
+      { name: 'OWNS THE STACK', tier: 'A' },
+      { name: 'NO EGO IN CODE REVIEW', tier: 'S' },
+      { name: 'SHIPS BEFORE PERFECT', tier: 'A' },
+    ],
+  },
+};
+
+const TIER_COLOR = { S: 'text-[var(--accent)]', A: 'text-[var(--fg)]', B: 'text-[var(--muted)]' };
+
+export default function Loadout() {
+  return (
+    <section id="skills" className="relative min-h-screen px-6 md:px-12 py-24 max-w-7xl mx-auto">
+      <div className="flex items-end justify-between gap-4 border-b border-[var(--border)] pb-4">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--accent)] mb-2">03 / 04</div>
+          <h2 className="font-pixel text-3xl md:text-5xl text-[var(--fg)]">LOADOUT</h2>
+        </div>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] hidden md:block">
+          EQUIPPED &middot; CREDITS 9000
+        </div>
+      </div>
+
+      <div className="mt-10 grid grid-cols-1 md:grid-cols-3 gap-4">
+        {Object.entries(LOADOUT).map(([key, group], idx) => (
+          <motion.div
+            key={key}
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: '-50px' }}
+            transition={{ duration: 0.4, delay: idx * 0.1 }}
+            className="hud-border bg-[var(--panel)] p-5 relative corner-brackets"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <div className="font-pixel text-sm text-[var(--accent)]">{key}</div>
+              <div className="font-mono text-[9px] uppercase tracking-widest text-[var(--muted)]">SLOT 0{idx+1}</div>
+            </div>
+            <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] mb-4">{group.desc}</div>
+            <div className="space-y-2">
+              {group.items.map((item) => (
+                <div key={item.name} data-interactive className="flex items-center justify-between gap-3 px-2 py-1.5 hud-border hover:border-[var(--accent)] transition group">
+                  <div className="min-w-0">
+                    <div className="font-pixel text-[10px] text-[var(--fg)] truncate">{item.name}</div>
+                    {item.note && (
+                      <div className="font-mono text-[10px] text-[var(--muted)] truncate">{item.note}</div>
+                    )}
+                  </div>
+                  <div className={`font-pixel text-xs ${TIER_COLOR[item.tier] || 'text-[var(--muted)]'}`}>
+                    {item.tier}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </section>
+  );
+}
+```
+
+### `components/MatchSummary.jsx`
+
+```jsx
+'use client';
+import { motion } from 'framer-motion';
+import { Github, Linkedin, Twitter, Mail } from 'lucide-react';
+
+const STATS = [
+  { label: 'PROJECTS SHIPPED', value: '42' },
+  { label: 'YEARS IN GAME', value: '06' },
+  { label: 'COFFEE CONSUMED', value: '\u221e' },
+  { label: 'BUGS FIXED', value: 'COUNTLESS' },
+  { label: 'PRs MERGED', value: '1.2K' },
+  { label: 'DEPLOYS / WEEK', value: '12' },
+];
+
+const FRIENDS = [
+  { name: 'GITHUB',   handle: '@meet', href: 'https://github.com', icon: Github },
+  { name: 'LINKEDIN', handle: '/in/meet', href: 'https://linkedin.com', icon: Linkedin },
+  { name: 'TWITTER',  handle: '@meet', href: 'https://twitter.com', icon: Twitter },
+  { name: 'EMAIL',    handle: 'meet@dev.gg', href: 'mailto:meet@dev.gg', icon: Mail },
+];
+
+export default function MatchSummary() {
+  return (
+    <section id="contact" className="relative min-h-screen px-6 md:px-12 py-24 max-w-7xl mx-auto">
+      <div className="flex items-end justify-between gap-4 border-b border-[var(--border)] pb-4">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[var(--accent)] mb-2">04 / 04</div>
+          <h2 className="font-pixel text-3xl md:text-5xl text-[var(--fg)]">MATCH SUMMARY</h2>
+        </div>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] hidden md:block">
+          FINAL SCORE &middot; 13-04
+        </div>
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        whileInView={{ opacity: 1, scale: 1 }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.45 }}
+        className="mt-10 relative hud-border-accent bg-[var(--panel)] p-8 overflow-hidden"
+      >
+        <div className="absolute top-0 left-0 w-24 h-full diag-stripe opacity-30" />
+        <div className="absolute top-0 right-0 w-24 h-full diag-stripe opacity-30" />
+        <div className="relative text-center">
+          <div className="font-mono text-[10px] uppercase tracking-[0.5em] text-[var(--muted)]">// RESULT</div>
+          <div className="font-pixel text-5xl md:text-7xl text-[var(--accent)] mt-2 glitch">VICTORY</div>
+          <div className="font-mono text-xs uppercase tracking-widest text-[var(--fg)] mt-3">
+            TEAM MEET &middot; 13 - 4 &middot; CHAMBERLAIN MAP
+          </div>
+        </div>
+      </motion.div>
+
+      <div className="mt-6 grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.4 }}
+          className="hud-border bg-[var(--panel)] p-6 corner-brackets"
+        >
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">MATCH MVP</div>
+          <div className="mt-3 flex items-center gap-4">
+            <div className="w-16 h-16 hud-border-accent grid place-items-center">
+              <span className="font-pixel text-xl text-[var(--accent)]">M</span>
+            </div>
+            <div>
+              <div className="font-pixel text-xl text-[var(--fg)]">MEET</div>
+              <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">ACS 412 &middot; KDA 4.8</div>
+            </div>
+          </div>
+          <div className="mt-5 grid grid-cols-3 gap-2">
+            <Pill label="ACE" />
+            <Pill label="CLUTCH 1v3" />
+            <Pill label="MOST DEPLOYS" />
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.4, delay: 0.1 }}
+          className="hud-border bg-[var(--panel)] p-6"
+        >
+          <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] mb-4">SCOREBOARD</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {STATS.map((s) => (
+              <div key={s.label} className="hud-border p-3">
+                <div className="font-mono text-[9px] uppercase tracking-widest text-[var(--muted)]">{s.label}</div>
+                <div className="font-pixel text-lg mt-1 text-[var(--fg)]">{s.value}</div>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      </div>
+
+      <div className="mt-6 hud-border bg-[var(--panel)] p-6">
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)] mb-4">ADD FRIEND &middot; SEND REQUEST</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {FRIENDS.map((f) => {
+            const Icon = f.icon;
+            return (
+              <a
+                key={f.name}
+                href={f.href}
+                target="_blank"
+                rel="noreferrer"
+                data-interactive
+                className="group hud-border p-3 flex items-center gap-3 hover:border-[var(--accent)] hover:bg-black/30 transition"
+              >
+                <Icon className="w-4 h-4 text-[var(--fg)] group-hover:text-[var(--accent)]" strokeWidth={1.5} />
+                <div className="min-w-0">
+                  <div className="font-pixel text-[10px] text-[var(--fg)] group-hover:text-[var(--accent)]">{f.name}</div>
+                  <div className="font-mono text-[10px] text-[var(--muted)] truncate">{f.handle}</div>
+                </div>
+                <span className="ml-auto font-pixel text-[10px] text-[var(--muted)] group-hover:text-[var(--accent)]">+ ADD</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-10 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+          MATCH ENDED &middot; READY UP FOR NEXT ROUND
+        </div>
+        <a
+          href="mailto:meet@dev.gg"
+          data-interactive
+          className="group relative inline-flex items-center gap-3 px-6 py-3 bg-[var(--accent)] text-white hud-border-accent hover:bg-[var(--fg)] hover:text-[var(--bg)] hover:border-[var(--fg)] transition"
+        >
+          <span className="font-pixel text-xs uppercase tracking-widest">PLAY AGAIN</span>
+          <span className="font-pixel text-xs">▶</span>
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function Pill({ label }) {
+  return (
+    <div className="hud-border-accent text-center py-1 px-2">
+      <span className="font-pixel text-[8px] uppercase tracking-widest text-[var(--accent)]">{label}</span>
+    </div>
+  );
+}
+```
+
+### `components/CrosshairCursor.jsx`
+
+```jsx
+'use client';
+import { useEffect, useState } from 'react';
+
+export default function CrosshairCursor() {
+  const [pos, setPos] = useState({ x: -100, y: -100 });
+  const [clicking, setClicking] = useState(false);
+  const [hovering, setHovering] = useState(false);
+  const [isTouch, setIsTouch] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const touch = window.matchMedia('(hover: none), (pointer: coarse)').matches;
+    setIsTouch(touch);
+    if (touch) return;
+
+    const handleMove = (e) => {
+      setPos({ x: e.clientX, y: e.clientY });
+      const el = e.target;
+      const isInteractive = el?.closest?.('a, button, [role="button"], input, textarea, select, [data-interactive]');
+      setHovering(!!isInteractive);
+    };
+    const handleDown = () => setClicking(true);
+    const handleUp = () => setClicking(false);
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mousedown', handleDown);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mousedown', handleDown);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, []);
+
+  if (isTouch) return null;
+
+  const scale = clicking ? 0.7 : hovering ? 1.4 : 1;
+
+  return (
+    <div
+      className="pointer-events-none fixed z-[9999] mix-blend-difference"
+      style={{
+        left: pos.x,
+        top: pos.y,
+        transform: `translate(-50%, -50%) scale(${scale})`,
+        transition: 'transform 90ms ease-out',
+      }}
+      aria-hidden
+    >
+      <div className="relative" style={{ width: 22, height: 22 }}>
+        <span style={{ position:'absolute', left:0,  top:'50%', width:8, height:1.5, background:'#FF4655', transform:'translateY(-50%)' }} />
+        <span style={{ position:'absolute', right:0, top:'50%', width:8, height:1.5, background:'#FF4655', transform:'translateY(-50%)' }} />
+        <span style={{ position:'absolute', top:0,    left:'50%', width:1.5, height:8, background:'#FF4655', transform:'translateX(-50%)' }} />
+        <span style={{ position:'absolute', bottom:0, left:'50%', width:1.5, height:8, background:'#FF4655', transform:'translateX(-50%)' }} />
+        {clicking && (
+          <span style={{ position:'absolute', left:'50%', top:'50%', width:18, height:18, border:'1px solid #FF4655', transform:'translate(-50%,-50%)' }} />
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+### `components/KillfeedToast.jsx`
+
+```jsx
+'use client';
+import { useEffect, useState, useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+
+const FEED = [
+  { killer: 'meet', target: 'generic portfolios', weapon: 'ORIGINALITY' },
+  { killer: 'meet', target: 'slow page loads', weapon: 'NEXT.JS' },
+  { killer: 'meet', target: 'unhandled exceptions', weapon: 'TRY/CATCH' },
+  { killer: 'meet', target: 'tech debt', weapon: 'REFACTOR' },
+  { killer: 'meet', target: 'flaky tests', weapon: 'DETERMINISM' },
+  { killer: 'meet', target: 'monolithic CSS', weapon: 'TAILWIND' },
+  { killer: 'meet', target: 'global state hell', weapon: 'CONTEXT' },
+  { killer: 'meet', target: 'production bugs', weapon: 'HOTFIX' },
+];
+
+export default function KillfeedToast() {
+  const [toasts, setToasts] = useState([]);
+  const lastScrollY = useRef(0);
+  const lastFireTime = useRef(0);
+  const fedIndices = useRef(new Set());
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const maybeFire = () => {
+      const now = Date.now();
+      if (now - lastFireTime.current < 6000) return;
+      if (Math.random() > 0.25) return;
+
+      const available = FEED.map((_, i) => i).filter(i => !fedIndices.current.has(i));
+      if (available.length === 0) {
+        fedIndices.current.clear();
+        return;
+      }
+      const idx = available[Math.floor(Math.random() * available.length)];
+      fedIndices.current.add(idx);
+      const item = { ...FEED[idx], id: now };
+      setToasts(prev => [...prev, item]);
+      lastFireTime.current = now;
+
+      setTimeout(() => {
+        setToasts(prev => prev.filter(t => t.id !== item.id));
+      }, 3500);
+    };
+
+    const handleScroll = () => {
+      const dy = Math.abs(window.scrollY - lastScrollY.current);
+      if (dy > 250) {
+        lastScrollY.current = window.scrollY;
+        maybeFire();
+      }
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    const initial = setTimeout(() => maybeFire(), 3000);
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      clearTimeout(initial);
+    };
+  }, []);
+
+  return (
+    <div className="fixed top-6 right-6 z-[150] flex flex-col gap-2 pointer-events-none">
+      <AnimatePresence>
+        {toasts.map(t => (
+          <motion.div
+            key={t.id}
+            initial={{ opacity: 0, x: 30 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 30 }}
+            transition={{ duration: 0.25 }}
+            className="hud-border bg-[#0d0d0d]/95 px-3 py-2 flex items-center gap-3 backdrop-blur"
+          >
+            <span className="font-pixel text-[10px] text-[var(--accent)]">{t.killer}</span>
+            <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">[ELIM]</span>
+            <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--accent)]">{t.weapon}</span>
+            <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">▸</span>
+            <span className="font-pixel text-[10px] text-[var(--fg)]">{t.target}</span>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+```
+
+### `components/PingEffect.jsx`
+
+```jsx
+'use client';
+import { useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import Sound from '@/lib/sound';
+
+export default function PingEffect() {
+  const [pings, setPings] = useState([]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (e) => {
+      const target = e.target;
+      if (!target) return;
+      if (target.closest?.('a, button, [role="button"], input, textarea, select, [data-interactive]')) return;
+      const id = Date.now() + Math.random();
+      setPings(prev => [...prev, { id, x: e.clientX, y: e.clientY }]);
+      try { Sound.ping(); } catch (_) {}
+      setTimeout(() => {
+        setPings(prev => prev.filter(p => p.id !== id));
+      }, 1100);
+    };
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, []);
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-[140] overflow-hidden">
+      <AnimatePresence>
+        {pings.map(p => (
+          <motion.div
+            key={p.id}
+            className="absolute"
+            style={{ left: p.x, top: p.y, transform: 'translate(-50%, -50%)' }}
+            initial={{ opacity: 1, scale: 0.2 }}
+            animate={{ opacity: 0, scale: 2.5 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1, ease: 'easeOut' }}
+          >
+            <div className="w-12 h-12 rounded-full border border-[var(--accent)]" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-1.5 h-1.5 bg-[var(--accent)]" />
+            </div>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+```
+
+### `components/SoundProvider.jsx`
+
+```jsx
+'use client';
+import { useEffect } from 'react';
+import Sound from '@/lib/sound';
+
+// Mounts global hover/click delegation so any button or [data-interactive]
+// element gets a sound effect, without touching every component.
+export default function SoundProvider() {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    Sound.init();
+
+    const isInteractive = (el) =>
+      !!el?.closest?.('a, button, [role="button"], [data-interactive]');
+
+    let lastHoverTarget = null;
+    const onOver = (e) => {
+      const target = e.target?.closest?.('a, button, [role="button"], [data-interactive]');
+      if (!target || target === lastHoverTarget) return;
+      lastHoverTarget = target;
+      Sound.hover();
+    };
+    const onOut = (e) => {
+      const target = e.target?.closest?.('a, button, [role="button"], [data-interactive]');
+      if (target === lastHoverTarget) lastHoverTarget = null;
+    };
+    const onClick = (e) => {
+      if (e.target?.closest?.('[data-no-click-sound]')) return;
+      if (isInteractive(e.target)) Sound.click();
+    };
+
+    document.addEventListener('mouseover', onOver, true);
+    document.addEventListener('mouseout', onOut, true);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      document.removeEventListener('mouseover', onOver, true);
+      document.removeEventListener('mouseout', onOut, true);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, []);
+
+  return null;
+}
+```
+
+### `components/RoundTransition.jsx`
+
+```jsx
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import Sound from '@/lib/sound';
+
+export default function RoundTransition({ label, code, children, sound = 'round' }) {
+  const ref = useRef(null);
+  const [shown, setShown] = useState(false);
+  const [showOverlay, setShowOverlay] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && !shown) {
+            setShown(true);
+            setShowOverlay(true);
+            try { Sound[sound]?.(); } catch (_) {}
+            setTimeout(() => setShowOverlay(false), 1100);
+          }
+        });
+      },
+      { threshold: 0.18 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [shown, sound]);
+
+  return (
+    <div ref={ref} className="relative">
+      <AnimatePresence>
+        {showOverlay && (
+          <motion.div
+            className="pointer-events-none absolute left-0 right-0 top-0 z-30 overflow-hidden"
+            style={{ height: '100vh' }}
+            initial={{ opacity: 1 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
+          >
+            <motion.div
+              className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-20 bg-[var(--accent)] flex items-center"
+              initial={{ scaleX: 0, transformOrigin: 'left center' }}
+              animate={{ scaleX: [0, 1, 1, 0], transformOrigin: ['left center', 'left center', 'right center', 'right center'] }}
+              transition={{ duration: 1.0, times: [0, 0.35, 0.65, 1], ease: 'easeInOut' }}
+            >
+              <div className="w-full px-6 md:px-12 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.4em] text-white/80">{code}</span>
+                  <span className="w-2 h-2 bg-white" />
+                </div>
+                <div className="font-pixel text-xl md:text-3xl text-white tracking-widest">
+                  {label}
+                </div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.4em] text-white/80 hidden md:block">
+                  ROUND START
+                </div>
+              </div>
+            </motion.div>
+            <motion.div
+              className="absolute left-0 right-0 top-[calc(50%-3rem)] h-px bg-white/80"
+              initial={{ scaleX: 0, transformOrigin: 'right' }}
+              animate={{ scaleX: [0, 1, 0], transformOrigin: ['right', 'right', 'left'] }}
+              transition={{ duration: 0.9, times: [0, 0.5, 1], ease: 'easeInOut', delay: 0.05 }}
+            />
+            <motion.div
+              className="absolute left-0 right-0 top-[calc(50%+3rem)] h-px bg-white/80"
+              initial={{ scaleX: 0, transformOrigin: 'left' }}
+              animate={{ scaleX: [0, 1, 0], transformOrigin: ['left', 'left', 'right'] }}
+              transition={{ duration: 0.9, times: [0, 0.5, 1], ease: 'easeInOut', delay: 0.1 }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {children}
+    </div>
+  );
+}
+```
+
+### `components/SystemLog.jsx`
+
+```jsx
+'use client';
+import { useEffect, useState, useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+
+const POOL = [
+  '[OK] auth.service initialized',
+  '[OK] agent.meet loaded',
+  '[OK] render pipeline ready',
+  '[OK] socket connection established',
+  '[..] awaiting input',
+  '[OK] shaders compiled',
+  '[OK] asset cache warmed',
+  '[..] syncing match data',
+  '[OK] coffee levels nominal',
+  '[OK] imposter syndrome suppressed',
+  '[OK] linter pacified',
+  '[OK] git hooks armed',
+  '[..] negotiating crdt handshake',
+  '[OK] hot reload subscribed',
+  '[OK] tailwind purge complete',
+  '[OK] keyboard claymore primed',
+  '[..] streaming patch notes',
+  '[OK] vibes calibrated to 144hz',
+  '[OK] tabs aligned to spaces',
+  '[..] queueing for ranked',
+  '[OK] dark mode enforced',
+  '[OK] muscle memory loaded',
+];
+
+const VISIBLE = 6;
+const INTERVAL = 1300;
+
+function pickLine(prev) {
+  for (let i = 0; i < 5; i++) {
+    const line = POOL[Math.floor(Math.random() * POOL.length)];
+    if (line !== prev) return line;
+  }
+  return POOL[0];
+}
+
+export default function SystemLog() {
+  const [lines, setLines] = useState([]);
+  const counter = useRef(0);
+  const lastRef = useRef('');
+
+  useEffect(() => {
+    const seed = [];
+    let last = '';
+    for (let i = 0; i < 3; i++) {
+      const l = pickLine(last);
+      last = l;
+      seed.push({ id: counter.current++, text: l });
+    }
+    lastRef.current = last;
+    setLines(seed);
+
+    const interval = setInterval(() => {
+      setLines((prev) => {
+        const l = pickLine(lastRef.current);
+        lastRef.current = l;
+        const next = [...prev, { id: counter.current++, text: l }];
+        if (next.length > VISIBLE) next.shift();
+        return next;
+      });
+    }, INTERVAL);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div
+      className="pointer-events-none absolute bottom-16 left-6 z-0 select-none"
+      style={{
+        width: 280,
+        height: VISIBLE * 18,
+        maskImage:
+          'linear-gradient(to bottom, transparent 0%, black 30%, black 75%, transparent 100%)',
+        WebkitMaskImage:
+          'linear-gradient(to bottom, transparent 0%, black 30%, black 75%, transparent 100%)',
+      }}
+      aria-hidden
+    >
+      <div className="flex flex-col justify-end h-full">
+        <AnimatePresence initial={false}>
+          {lines.map((line) => {
+            const isPending = line.text.startsWith('[..]');
+            return (
+              <motion.div
+                key={line.id}
+                layout
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 0.28, y: 0 }}
+                exit={{ opacity: 0, y: -14 }}
+                transition={{ duration: 0.45, ease: 'easeOut' }}
+                className="font-mono text-[11px] leading-[18px] tracking-wide text-[var(--fg)] whitespace-nowrap"
+              >
+                <span className={isPending ? 'text-[var(--accent)]' : 'text-[var(--fg)]'}>
+                  {line.text.slice(0, 4)}
+                </span>
+                <span className="text-[var(--fg)]">{line.text.slice(4)}</span>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+```
+
+### `components/BackgroundBirds.jsx`
+
+```jsx
+'use client';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import Sound from '@/lib/sound';
+
+const MAX_BIRDS = 3;
+const SPAWN_MIN = 2800;
+const SPAWN_MAX = 5500;
+
+function randomBird() {
+  if (typeof window === 'undefined') return null;
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  const vh = window.innerHeight;
+  const vw = window.innerWidth;
+  const y = 70 + Math.random() * Math.max(80, vh * 0.32 - 70);
+  const speed = 60 + Math.random() * 80;
+  const startX = dir > 0 ? -50 : vw + 50;
+  const endX   = dir > 0 ? vw + 60 : -60;
+  return { id: Date.now() + Math.random(), startX, endX, y, speed, dir };
+}
+
+export default function BackgroundBirds() {
+  const [birds, setBirds] = useState([]);
+  const [kills, setKills] = useState(0);
+  const [toasts, setToasts] = useState([]);
+  const birdsRef = useRef(birds);
+  birdsRef.current = birds;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let timer;
+    const schedule = () => {
+      const delay = SPAWN_MIN + Math.random() * (SPAWN_MAX - SPAWN_MIN);
+      timer = setTimeout(() => {
+        if (birdsRef.current.length < MAX_BIRDS) {
+          const b = randomBird();
+          if (b) setBirds((prev) => [...prev, b]);
+        }
+        schedule();
+      }, delay);
+    };
+    const first = setTimeout(() => {
+      const b = randomBird();
+      if (b) setBirds((prev) => [...prev, b]);
+      schedule();
+    }, 1200);
+    return () => { clearTimeout(timer); clearTimeout(first); };
+  }, []);
+
+  const handleDespawn = useCallback((id) => {
+    setBirds((prev) => prev.filter((b) => b.id !== id));
+  }, []);
+
+  const handleKill = useCallback((x, y) => {
+    setKills((k) => k + 1);
+    try { Sound.headshot?.(); } catch (_) {}
+    const id = Date.now() + Math.random();
+    const label = Math.random() < 0.5 ? 'HEADSHOT' : 'TARGET ELIMINATED';
+    setToasts((prev) => [...prev, { id, x, y, label }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 900);
+  }, []);
+
+  return (
+    <>
+      <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden>
+        {birds.map((b) => (
+          <Bird key={b.id} {...b} onDespawn={handleDespawn} onKill={handleKill} />
+        ))}
+      </div>
+
+      <div className="pointer-events-none absolute inset-0 z-[1100]" aria-hidden>
+        <AnimatePresence>
+          {toasts.map((t) => (
+            <motion.div
+              key={t.id}
+              initial={{ opacity: 0, y: 0, scale: 0.8 }}
+              animate={{ opacity: 1, y: -28, scale: 1 }}
+              exit={{ opacity: 0, y: -48 }}
+              transition={{ duration: 0.45, ease: 'easeOut' }}
+              className="absolute font-pixel text-[10px] tracking-widest text-[var(--accent)] whitespace-nowrap"
+              style={{ left: t.x, top: t.y, transform: 'translate(-50%, -50%)' }}
+            >
+              <span className="hud-border-accent bg-[#0d0d0d]/90 px-2 py-1 inline-block">
+                {t.label}
+              </span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 z-[1050] font-mono text-[10px] uppercase tracking-widest text-[var(--muted)]">
+        BIRDS&nbsp;<span className="text-[var(--accent)]">{String(kills).padStart(2, '0')}</span>
+      </div>
+    </>
+  );
+}
+
+function Bird({ id, startX, endX, y, speed, dir, onDespawn, onKill }) {
+  const [pos, setPos] = useState({ x: startX, dy: 0, rot: 0, opacity: 1, frame: 0 });
+  const [dead, setDead] = useState(false);
+  const stateRef = useRef({ x: startX, deathT: 0, flapT: 0, dead: false });
+
+  useEffect(() => {
+    let raf;
+    let last = performance.now();
+    const tick = (now) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const s = stateRef.current;
+
+      if (!s.dead) {
+        s.x += dir * speed * dt;
+        s.flapT += dt;
+        let frame = pos.frame;
+        if (s.flapT > 0.22) {
+          frame = 1 - frame;
+          s.flapT = 0;
+        }
+        const done = (dir > 0 && s.x > endX) || (dir < 0 && s.x < endX);
+        if (done) { onDespawn(id); return; }
+        setPos((p) => ({ ...p, x: s.x, frame }));
+      } else {
+        s.deathT += dt;
+        const dy = 0.5 * 1600 * s.deathT * s.deathT;          // gravity (px/s^2)
+        const rot = (dir > 0 ? 720 : -720) * (s.deathT / 0.8);
+        const opacity = Math.max(0, 1 - s.deathT / 0.8);
+        setPos((p) => ({ ...p, dy, rot, opacity }));
+        if (s.deathT > 0.85) { onDespawn(id); return; }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleClick = (e) => {
+    if (stateRef.current.dead) return;
+    e.stopPropagation();
+    stateRef.current.dead = true;
+    setDead(true);
+    onKill(e.clientX, e.clientY);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      data-no-click-sound
+      className="absolute p-1 bg-transparent border-0 outline-none"
+      style={{
+        left: pos.x,
+        top: y + pos.dy,
+        transform: `rotate(${pos.rot}deg)`,
+        opacity: pos.opacity,
+        cursor: 'none',
+        willChange: 'transform, opacity, left, top',
+      }}
+      aria-label="shoot bird"
+    >
+      <BirdSprite frame={dead ? 'dead' : pos.frame} flip={dir < 0} />
+    </button>
+  );
+}
+
+function BirdSprite({ frame, flip }) {
+  let pixels;
+  if (frame === 'dead') {
+    pixels = [
+      [4,2],[5,2],[10,2],[11,2],
+      [3,4],[5,4],[6,4],[7,4],[8,4],[9,4],[10,4],[12,4],
+      [4,5],[5,5],[6,5],[7,5],[8,5],[9,5],[10,5],[11,5],
+      [6,6],[7,6],[8,6],[9,6],
+    ];
+  } else if (frame === 0) {
+    pixels = [
+      [2,1],[13,1],
+      [3,2],[12,2],
+      [4,3],[5,3],[6,3],[7,3],[8,3],[9,3],[10,3],[11,3],
+      [5,4],[6,4],[7,4],[8,4],[9,4],[10,4],
+      [6,5],[7,5],[8,5],[9,5],
+      [7,6],[8,6],
+    ];
+  } else {
+    pixels = [
+      [4,2],[5,2],[6,2],[7,2],[8,2],[9,2],[10,2],[11,2],
+      [2,3],[3,3],[12,3],[13,3],
+      [5,4],[6,4],[7,4],[8,4],[9,4],[10,4],
+      [6,5],[7,5],[8,5],[9,5],
+      [7,6],[8,6],
+    ];
+  }
+  return (
+    <svg
+      viewBox="0 0 16 10"
+      width="32"
+      height="20"
+      style={{ imageRendering: 'pixelated', transform: flip ? 'scaleX(-1)' : 'none' }}
+      shapeRendering="crispEdges"
+      aria-hidden
+    >
+      {pixels.map(([x, y], i) => (
+        <rect key={i} x={x} y={y} width="1" height="1" fill="#ECE8E1" />
+      ))}
+    </svg>
+  );
+}
+```
+
+### `lib/projects.js`
+
+```js
+// Shared project ("agent") data — used by roster + detail pages.
+
+export const PROJECTS = [
+  {
+    slug: 'nexus',
+    id: 'AGT-01',
+    name: 'NEXUS',
+    role: 'CONTROLLER',
+    hook: 'Real-time collaboration platform with sub-50ms sync.',
+    desc: 'A multi-user workspace built on WebSockets and CRDTs. Handles document collab, presence, and offline-first sync. Deployed to 12k+ DAU.',
+    palette: '#FF4655',
+    year: '2024',
+    status: 'LIVE',
+    repo: 'https://github.com/meet/nexus',
+    live: 'https://nexus.example.com',
+    stack: [['Next.js', 92], ['Python', 88], ['Redis', 75], ['WebRTC', 70]],
+    abilities: [
+      ['Q', 'CRDT SYNC',    'Conflict-free state replication across N clients.'],
+      ['E', 'PRESENCE',     'Avatars + cursors, throttled to 60fps.'],
+      ['C', 'OFFLINE MODE', 'IndexedDB queue, syncs on reconnect.'],
+      ['X', 'AUDIT TRAIL',  'Every keystroke timestamped + replayable.'],
+    ],
+    highlights: ['12k DAU', '99.95% uptime', '< 50ms p95 sync'],
+  },
+  {
+    slug: 'oracle',
+    id: 'AGT-02',
+    name: 'ORACLE',
+    role: 'SENTINEL',
+    hook: 'AI-driven log anomaly detector for distributed systems.',
+    desc: 'Streams logs through a fine-tuned classifier, flags anomalies in real-time, posts to Slack. Cut MTTR by 60% in production.',
+    palette: '#7dd3fc',
+    year: '2024',
+    status: 'LIVE',
+    repo: 'https://github.com/meet/oracle',
+    live: null,
+    stack: [['Python', 95], ['FastAPI', 90], ['ClickHouse', 80], ['LLMs', 85]],
+    abilities: [
+      ['Q', 'STREAM PARSE',  'Ingests 50k events/sec from Kafka.'],
+      ['E', 'PATTERN SCAN',  'Fine-tuned model trained on 6mo of logs.'],
+      ['C', 'SLACK ALERTS',  'Smart de-dupe so on-call doesn\u2019t scream.'],
+      ['X', 'ROOT CAUSE',    'Auto-traces back to the offending commit.'],
+    ],
+    highlights: ['60% lower MTTR', '50k events/sec', '0 false-pos days'],
+  },
+  {
+    slug: 'ghost',
+    id: 'AGT-03',
+    name: 'GHOST',
+    role: 'DUELIST',
+    hook: 'Privacy-first analytics SDK \u2014 cookieless, GDPR-clean.',
+    desc: 'Tiny 3kb JS SDK pairing with an edge ingestion pipeline. Tracks events without third-party cookies. Powers 300+ sites.',
+    palette: '#a78bfa',
+    year: '2023',
+    status: 'LIVE',
+    repo: 'https://github.com/meet/ghost',
+    live: 'https://ghost.example.com',
+    stack: [['TypeScript', 90], ['Edge Functions', 85], ['Postgres', 78]],
+    abilities: [
+      ['Q', 'TINY SDK',    '3kb gzipped. Zero runtime deps.'],
+      ['E', 'EDGE INGEST', 'Cloudflare workers, < 20ms p99.'],
+      ['C', 'NO COOKIES',  'Server-side session hashing.'],
+      ['X', 'EXPORT ANY',  'CSV, BigQuery, Postgres, S3 sinks.'],
+    ],
+    highlights: ['3kb gzipped', '300+ sites', 'GDPR ✓'],
+  },
+  {
+    slug: 'pyre',
+    id: 'AGT-04',
+    name: 'PYRE',
+    role: 'INITIATOR',
+    hook: 'Background job runner with visual DAG editor.',
+    desc: 'Distributed task queue with a drag-and-drop pipeline builder. Used internally to orchestrate ETL across 40+ data sources.',
+    palette: '#fbbf24',
+    year: '2023',
+    status: 'INTERNAL',
+    repo: null,
+    live: null,
+    stack: [['React', 92], ['Python', 90], ['Celery', 80], ['Kafka', 70]],
+    abilities: [
+      ['Q', 'VISUAL DAG',  'Drag, drop, deploy. No YAML required.'],
+      ['E', 'RETRY LOGIC', 'Backoff + jitter built-in.'],
+      ['C', 'OBSERVABLE',  'Per-task traces, metrics, logs.'],
+      ['X', 'SCALE WIDE',  'Burst to 200 workers in 30s.'],
+    ],
+    highlights: ['40+ sources', '200 workers', '8M tasks/day'],
+  },
+  {
+    slug: 'beacon',
+    id: 'AGT-05',
+    name: 'BEACON',
+    role: 'CONTROLLER',
+    hook: 'Status page generator with public-API uptime monitoring.',
+    desc: 'Spin up a branded status page in minutes. Hourly checks, incident comms, SLA reports. SaaS side-project, paying users.',
+    palette: '#34d399',
+    year: '2022',
+    status: 'LIVE',
+    repo: 'https://github.com/meet/beacon',
+    live: 'https://beacon.example.com',
+    stack: [['Next.js', 90], ['Postgres', 80], ['Cron', 75]],
+    abilities: [
+      ['Q', 'CHECK ARRAY',  'HTTP, TCP, DNS, SSL expiry.'],
+      ['E', 'BRANDED PAGE', 'Custom domain + theme.'],
+      ['C', 'INCIDENTS',    'Markdown updates, RSS, webhooks.'],
+      ['X', 'SLA REPORT',   'PDFs auto-mailed monthly.'],
+    ],
+    highlights: ['paying users', 'multi-region', 'SLA reports'],
+  },
+  {
+    slug: 'rune',
+    id: 'AGT-06',
+    name: 'RUNE',
+    role: 'DUELIST',
+    hook: 'AI agent that writes & ships PRs autonomously.',
+    desc: 'Experimental coding agent that reads issues, plans, writes code, opens PRs. Built with Anthropic\u2019s SDK and a custom toolchain.',
+    palette: '#FF4655',
+    year: '2025',
+    status: 'BETA',
+    repo: null,
+    live: null,
+    stack: [['Python', 95], ['LLMs', 90], ['GitHub API', 85]],
+    abilities: [
+      ['Q', 'READ ISSUE',   'Parses Github issues + context.'],
+      ['E', 'PLAN STEPS',   'Tree-of-thought before coding.'],
+      ['C', 'OPEN PR',      'Clean diff, descriptive title, tests.'],
+      ['X', 'SELF-REVIEW',  'Iterates until checks pass.'],
+    ],
+    highlights: ['merged in OSS', '~80% pass rate', 'tool-use heavy'],
+  },
+];
+
+export function getProjectBySlug(slug) {
+  return PROJECTS.find((p) => p.slug === slug) || null;
+}
+```
+
+### `lib/sound.js`
+
+```js
+// Tiny Web Audio FX synth. No external assets.
+// Lazy-inits the AudioContext on first user gesture (browser policy).
+
+let ctx = null;
+let master = null;
+let enabled = true;
+
+function ensureCtx() {
+  if (typeof window === 'undefined') return null;
+  if (ctx) return ctx;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = 0.12;
+    master.connect(ctx.destination);
+  } catch (_) {
+    ctx = null;
+  }
+  return ctx;
+}
+
+function tone({ freq = 440, dur = 0.08, type = 'square', vol = 0.5, attack = 0.005, decay = 0.04, sweep = 0 }) {
+  if (!enabled) return;
+  const c = ensureCtx();
+  if (!c || !master) return;
+  if (c.state === 'suspended') c.resume().catch(() => {});
+
+  const osc = c.createOscillator();
+  const gain = c.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, c.currentTime);
+  if (sweep) {
+    osc.frequency.exponentialRampToValueAtTime(
+      Math.max(20, freq + sweep),
+      c.currentTime + dur,
+    );
+  }
+  gain.gain.setValueAtTime(0, c.currentTime);
+  gain.gain.linearRampToValueAtTime(vol, c.currentTime + attack);
+  gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur + decay);
+
+  osc.connect(gain).connect(master);
+  osc.start();
+  osc.stop(c.currentTime + dur + decay + 0.02);
+}
+
+export const Sound = {
+  init() {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem('meet:sound');
+      if (stored !== null) enabled = stored === '1';
+    } catch (_) {}
+  },
+  isEnabled() { return enabled; },
+  setEnabled(v) {
+    enabled = !!v;
+    try { window.localStorage.setItem('meet:sound', enabled ? '1' : '0'); } catch (_) {}
+    if (enabled) {
+      ensureCtx();
+      if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    }
+  },
+  hover() { tone({ freq: 1400, dur: 0.04, type: 'square', vol: 0.18, sweep: -200 }); },
+  click() {
+    tone({ freq: 880, dur: 0.06, type: 'square', vol: 0.4, sweep: -300 });
+    setTimeout(() => tone({ freq: 1320, dur: 0.05, type: 'square', vol: 0.25 }), 30);
+  },
+  ping() {
+    tone({ freq: 1800, dur: 0.05, type: 'sine', vol: 0.35, sweep: 600 });
+    setTimeout(() => tone({ freq: 2400, dur: 0.06, type: 'sine', vol: 0.25 }), 40);
+  },
+  match() {
+    const notes = [523, 659, 784, 1046];
+    notes.forEach((f, i) => {
+      setTimeout(() => tone({ freq: f, dur: 0.1, type: 'square', vol: 0.45 }), i * 90);
+    });
+  },
+  headshot() {
+    tone({ freq: 2200, dur: 0.05, type: 'square', vol: 0.5, sweep: -800 });
+    setTimeout(() => tone({ freq: 180, dur: 0.08, type: 'sawtooth', vol: 0.3, sweep: -80 }), 20);
+  },
+  defeat() { tone({ freq: 220, dur: 0.4, type: 'sawtooth', vol: 0.3, sweep: -120 }); },
+  round() {
+    tone({ freq: 300, dur: 0.18, type: 'sawtooth', vol: 0.25, sweep: 500 });
+    setTimeout(() => tone({ freq: 1320, dur: 0.12, type: 'square', vol: 0.3 }), 120);
+  },
+};
+
+export default Sound;
+```
+
+### `tailwind.config.js`
+
+```js
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  darkMode: ["class"],
+  content: [
+    './pages/**/*.{js,jsx}',
+    './components/**/*.{js,jsx}',
+    './app/**/*.{js,jsx}',
+    './src/**/*.{js,jsx}',
+  ],
+  prefix: "",
+  theme: {
+    container: { center: true, padding: '2rem', screens: { '2xl': '1400px' } },
+    extend: {},
+  },
+  plugins: [require("tailwindcss-animate")],
+};
+```
+
+> The original template included a much larger `theme.extend` (shadcn HSL color tokens, accordion keyframes, etc.). For this portfolio that config is unused — all colors live as `var(--*)` CSS variables in `globals.css`. You can safely use the minimal version above.
+
+### `postcss.config.js`
+
+```js
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
+```
+
+### `jsconfig.json` (for the `@/` path alias — add if not present)
+
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["./*"] }
+  }
+}
+```
+
+---
+
+## 4) ASSETS
+
+There are **no binary/image assets at all** — everything pixel-art is hand-coded SVG drawn from coordinate arrays.
+
+| Asset | Source | Where it's used |
+|---|---|---|
+| **Press Start 2P** font | Google Fonts (loaded via `next/font/google`) | All headings, menu items, badges, big numbers — anything with `.font-pixel` |
+| **JetBrains Mono** font | Google Fonts (loaded via `next/font/google`) | All HUD labels, stats, body text — anything with `.font-mono` (also the page default) |
+| **Icon set** | `lucide-react` (already in deps) | Only `Github`, `Linkedin`, `Twitter`, `Mail` in `MatchSummary.jsx` |
+| **Agent helmet sprite** | Inline SVG in `AgentBio.jsx → PixelPortrait()` | About section portrait |
+| **Project skull sprite** | Inline SVG in `AgentRoster.jsx → ProjectSprite()` (exported, reused by detail page) | Roster cards + agent detail page hero |
+| **Bird sprite** | Inline SVG in `BackgroundBirds.jsx → BirdSprite()` (3 frames: wings-up, wings-down, dead) | Main menu background |
+| **Crosshair** | Plain `<div>`/`<span>` boxes in `CrosshairCursor.jsx` | Custom cursor |
+| **Audio** | Synthesized at runtime via Web Audio API oscillators in `lib/sound.js` | All sound FX (hover, click, ping, match, headshot, round) — no audio files |
+| **Tactical grid background** | CSS gradients in `globals.css → .tactical-grid` | Main menu, mini-map |
+| **Diagonal stripe** | CSS gradient in `globals.css → .diag-stripe` | Section labels, VICTORY banner sides |
+| **Scanlines** | CSS gradient in `globals.css → .scanlines::after` | Whole `<main>` + main menu |
+
+That's it — to recreate this you need zero external image hosting and zero downloaded font/audio files.
+
+---
+
+## 5) ANIMATION & INTERACTION LOGIC
+
+### Smooth scroll (Lenis)
+- One `Lenis` instance created in `app/page.js` after the menu is dismissed.
+- A `requestAnimationFrame` loop calls `lenis.raf(time)` each frame.
+- `MiniMap` calls back into `lenisRef.current.scrollTo(el, { offset: -20, duration: 1.2 })` for smooth in-page navigation.
+
+### Custom crosshair cursor
+- `CrosshairCursor.jsx` tracks `mousemove` and stores `(x, y)` in state, positions a fixed-position `<div>` via `transform: translate(-50%, -50%) scale(N)`.
+- Scale: `1` default, `1.4` when hovering over `a/button/[role="button"]/[data-interactive]`, `0.7` on `mousedown` (plus a 1px square ring appears briefly).
+- Native cursor is killed globally with `cursor: none !important` in CSS, but only on `(hover: hover) and (pointer: fine)` — touch devices keep their native cursor and the component early-returns `null`.
+- Uses `mix-blend-difference` so the crosshair stays visible on both light accent and dark backgrounds.
+
+### Main menu state machine
+- Three stages in local state: `'menu' | 'settings' | 'matching'`, transitioned via `<AnimatePresence mode="wait">`.
+- `PLAY` → set `stage='matching'` → call `Sound.match()` → `setTimeout(onPlay, 1600)` so the parent unmounts the menu.
+- Matchmaking screen uses a `.loading-bar` CSS keyframes animation (`width: 0% → 100%` over 1.4s).
+- Sound toggle is persisted to `localStorage` via `Sound.setEnabled(v)`.
+
+### Mini-map
+- 4 dots positioned absolutely as `%` coordinates inside a 176×176 HUD box.
+- Parent (`app/page.js`) keeps `activeSection` updated via an `IntersectionObserver` (threshold 0.35) over the four section IDs.
+- Active dot gets `bg-[var(--accent)]` plus the `.pulse-dot` CSS keyframes (expanding `box-shadow`).
+- Clicking a dot calls `onNavigate(id)` → Lenis scroll.
+
+### Section reveal animations
+- All cards/columns use Framer Motion `whileInView` with `viewport={{ once: true }}` so they animate exactly once.
+- Pattern: `initial={{ opacity: 0, y/x: ±20 }} whileInView={{ opacity: 1, y/x: 0 }} transition={{ duration: 0.35-0.5, delay: i * 0.05-0.1 }}`.
+
+### Round-end transition (between sections)
+- `RoundTransition.jsx` wraps each section. An `IntersectionObserver` (threshold 0.18) triggers exactly once when the wrapper enters view.
+- Plays the configured sound (`round` or `match`) and shows an overlay for 1.1s containing:
+  - A 5-rem-tall red bar that `scaleX` 0→1→1→0 with `transformOrigin` switching mid-keyframe from `left` to `right` — produces a wipe-in-then-wipe-out effect.
+  - Two thin white sweep lines above/below that scaleX from right and from left respectively on a slight stagger.
+- The red bar contains the section title (pixel font) and a checkpoint code (mono).
+
+### Killfeed toasts
+- `KillfeedToast.jsx` listens for `scroll` events.
+- When the user has scrolled more than 250 px since last check, has a 25% random chance, and 6s have passed since the last fire, it picks an unused FEED entry, shows it for 3.5s.
+- When the FEED pool is exhausted, the "fed indices" set is reset.
+
+### Click-to-ping
+- `PingEffect.jsx` listens for `click` on `window`. Ignores any click whose target is in an interactive element.
+- Adds a `{ id, x, y }` to state, removed after 1.1s.
+- Each ping renders as a Framer Motion div animating `scale: 0.2 → 2.5` and `opacity: 1 → 0` over 1s, with a 1.5px center dot.
+- Also fires `Sound.ping()`.
+
+### Sound system
+- `lib/sound.js` lazy-creates an `AudioContext` on first call, runs everything through a single master `GainNode` at volume 0.12.
+- Each method (`hover`, `click`, `ping`, `match`, `headshot`, `defeat`, `round`) builds short oscillator tones with attack/decay envelopes and optional pitch sweep via `exponentialRampToValueAtTime`.
+- `SoundProvider.jsx` mounts global capture-phase `mouseover`/`click` listeners. Any `a / button / [role="button"] / [data-interactive]` element gets a hover beep on enter and a click tick on click — except when the click target is inside `[data-no-click-sound]` (used by bird buttons so they only emit `headshot`).
+- On/off state is persisted in `localStorage` under `meet:sound`.
+
+### Scrolling system log (bottom-left)
+- `SystemLog.jsx` keeps a state array of 6 recent lines (`{ id, text }`).
+- On a 1.3s interval, picks a random line from a 22-entry pool (never the most recent one), appends to the array, shifts the oldest off.
+- Each line is a Framer Motion `<motion.div layout>`. New lines fade in from `y: 14` to `y: 0` at `opacity: 0.28`. Exiting lines fade out to `y: -14`. The `layout` prop makes the remaining lines slide up naturally.
+- Container has a top + bottom CSS `mask-image` gradient so lines fade in/out at the edges.
+- z-index is `0` so it sits behind the main menu content but above the menu's dark background.
+
+### Background birds
+- `BackgroundBirds.jsx` maintains a state array of alive birds.
+- Spawner: on mount, `setTimeout(initial=1200ms)` to spawn the first bird, then a recursive `schedule()` function with random delay 2800–5500ms until at most 3 birds are alive.
+- Each bird has a randomized direction (`±1`), starting x just off-screen, target x just past the opposite edge, `y` in the upper ~32% of the viewport, and a speed of 60–140 px/sec.
+- The `Bird` subcomponent owns its own `requestAnimationFrame` loop:
+  - **Alive**: `x += dir * speed * dt`, every 220ms toggles `frame` 0↔1 to flap the wings. When past the target x, calls `onDespawn(id)` and the component is removed from the array.
+  - **Dead** (triggered on click): switches to a different animation in the same loop — `dy = 0.5 * 1600 * t²` (gravity falling), `rot = ±720° * (t / 0.8)` (spin), `opacity = 1 - t/0.8` (fade). After 0.85s calls `onDespawn`.
+- Bird elements are `<button data-no-click-sound>` so the global click sound is suppressed; only `Sound.headshot()` plays.
+- On kill: increments a `kills` counter (shown as `BIRDS NN` near the bottom) and pushes a `HEADSHOT` or `TARGET ELIMINATED` toast at the click point that animates `y: 0 → -28` then exits.
+- Birds are clickable through the menu's transparent middle area thanks to `pointer-events-none` on the menu wrapper and `pointer-events-auto` only on the actual menu block.
+
+### Bird sprites
+- Pure SVG with `viewBox="0 0 16 10"`, `shapeRendering="crispEdges"`, and `image-rendering: pixelated`.
+- Three frames defined as `[x, y]` rectangle arrays: wings-up, wings-down, dead (with X-eyes).
+- `flip` prop applies `scaleX(-1)` when the bird is flying right-to-left.
+
+### Pixel portrait (`AgentBio`) & project skull (`AgentRoster.ProjectSprite`)
+- Same SVG pixel-rect technique. Coordinates hand-placed.
+- `ProjectSprite` takes a `color` prop so the same sprite renders in red / blue / purple / yellow / green per project.
+
+### Agent detail page
+- Static-generated via `generateStaticParams()` — one HTML page per project at build time.
+- `params` is awaited (Next.js 15 requirement) in both the page component and `generateMetadata`.
+- Animates: hero card slides in on mount; abilities and stack panels animate in on `whileInView`; stat bars animate width from 0 to N% with `whileInView`.
+
+---
+
+## 6) KNOWN ISSUES
+
+These are the things still rough or worth fixing:
+
+1. **EXIT button is a joke** — currently redirects to `https://www.google.com`. Replace with a proper "thanks for visiting" screen or close-tab attempt.
+2. **Placeholder content everywhere** — all 6 projects, all socials (`meet@dev.gg`, `@meet`, etc.), bio, abilities, stats numbers (HP/Armor/Creds, 13-4 score, KDA 4.8) are fake. Swap with real content.
+3. **No accessibility for the custom cursor** — `cursor: none !important` is applied globally on non-touch; users with motor difficulties relying on system cursor magnification or high-contrast cursors will lose those. Add a "RESTORE NATIVE CURSOR" setting or respect `prefers-reduced-motion`.
+4. **`REDUCED MOTION` setting in Settings is non-functional** — the toggle changes its visual state but doesn't actually disable Framer Motion animations. Wire it into a `MotionConfig` provider or to `useReducedMotion()`.
+5. **Birds remain clickable while in their "dead" tumble** — only `stateRef.current.dead` is checked, but the button still receives `pointer-events: auto` during the fall. Add `pointer-events: none` to the button style when `dead === true`.
+6. **Birds are scoped to the main menu only** — `BackgroundBirds` is mounted inside `MainMenu`. If you want them everywhere (or in specific sections), pull it up into `page.js`.
+7. **Killfeed only fires on `scroll`** — won't fire on mobile if the user uses Lenis-managed scroll which doesn't always emit native scroll events. Consider switching to a Lenis `on('scroll', ...)` subscription.
+8. **`generateMetadata` returns the `—` em-dash literally** — fine in titles, but make sure your hosting platform's OG image generation handles unicode.
+9. **Mini-map fixed position can overlap the bottom-right of the `MatchSummary` "PLAY AGAIN" CTA on tiny viewports** — consider hiding the mini-map below `sm:` breakpoint with `hidden sm:block`.
+10. **Hover/click sounds layer on bird kill** — currently `Sound.click()` is suppressed via `data-no-click-sound`, but `Sound.hover()` still fires when hovering a bird. Add `[data-no-click-sound]` to the hover handler skip-list too if you want a cleaner kill sound.
+11. **No `next.config.js`** in this output — the template's default is fine, but if you want static export (`output: 'export'`) you'd need to drop the API route or move it.
+12. **`tailwind.config.js` shipped with the original template carries unused shadcn HSL tokens and `tailwindcss-animate`**. I included the minimal version above; you can drop `tailwindcss-animate` and the giant `theme.extend.colors` block entirely.
+13. **`prefetch` on every roster `<Link>`** triggers 6 background fetches on the home page. Fine for 6 projects, but if you grow the list, set `prefetch={false}` on cards that aren't immediately above-the-fold.
+14. **No `loading.js` or `error.js`** for the `/agents/[slug]` route — invalid slugs trigger Next.js's default 404 page, which doesn't match the HUD theme. Add a themed `not-found.js`.
+15. **Press Start 2P has very limited unicode coverage** — characters like `·` (middle dot) and emoji render as `.notdef` boxes when used inside a `.font-pixel` class. Keep pixel-font text strictly to ASCII A-Z 0-9 and punctuation; all middle-dot separators in this codebase are inside `.font-mono` (JetBrains Mono) which renders them correctly.
+
+---
+
+You should be able to drop this into a fresh `npx create-next-app@latest --js --tailwind` project, replace the generated files with these, `yarn add framer-motion lenis lucide-react`, and have a working clone running on `localhost:3000`. Good luck extending it. GG WP.
